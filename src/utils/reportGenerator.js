@@ -1,106 +1,62 @@
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+/**
+ * Converts telemetry logs to CSV and triggers a browser download.
+ * @param {Array} telemetryLogs - Array of historical/live telemetry log objects.
+ * @param {Object} activeMotor - The currently selected motor asset.
+ */
+export function exportTelemetryToCSV(telemetryLogs, activeMotor) {
+  if (!telemetryLogs || telemetryLogs.length === 0) {
+    alert("No telemetry records available to export.");
+    return;
+  }
 
-// Export Tabular Telemetry Data to CSV[cite: 1]
-export const exportTelemetryToCSV = (logs, motorInfo) => {
-  const headers = ['Test ID,Timestamp,Raw IR (MOhm),Temp (C),Corrected IR 40C (MOhm),Threshold IRmin (MOhm),Status,Operator\n'];
-  const rows = logs.map(log => [
-    log.id,
-    `"${log.formattedDate || new Date().toLocaleString()}"`,
+  const headers = [
+    "Timestamp",
+    "Motor Name",
+    "Location",
+    "Operating Voltage (V)",
+    "Direct IR (M-Ohm)",
+    "Temperature (C)",
+    "Normalized IR 40C (M-Ohm)",
+    "Baseline Limit (M-Ohm)",
+    "Status",
+    "Operator"
+  ];
+
+  const rows = telemetryLogs.map((log) => [
+    `"${log.formattedDate || ""}"`,
+    `"${activeMotor?.motor_name || "Motor"}"`,
+    `"${activeMotor?.location || "Plant"}"`,
+    log.rated_voltage || activeMotor?.rated_voltage || 480,
     log.raw_ir,
     log.temperature,
     log.corrected_ir,
-    log.ir_min || 1.48,
+    log.ir_min,
     `"${log.motor_status}"`,
-    `"${log.user_name || 'Automated AMU'}"`
-  ].join(','));
+    `"${log.user_name || "Python Gateway"}"`
+  ]);
 
-  const csvContent = 'data:text/csv;charset=utf-8,' + headers.concat(rows).join('\n');
-  const encodedUri = encodeURI(csvContent);
-  const link = document.createElement('a');
-  link.setAttribute('href', encodedUri);
-  link.setAttribute('download', `YUTA_${motorInfo?.motor_name?.replace(/\s+/g, '_') || 'Motor'}_Telemetry_${Date.now()}.csv`);
+  const csvContent = [
+    headers.join(","),
+    ...rows.map((row) => row.join(","))
+  ].join("\n");
+
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const motorTag = (activeMotor?.motor_name || "MOTOR").replace(/\s+/g, "_");
+
+  link.setAttribute("href", url);
+  link.setAttribute("download", `YUTA_${motorTag}_${dateStr}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-};
+}
 
-// Export Formal Technical Maintenance Report as PDF[cite: 1]
-export const exportMaintenanceReportPDF = (logs, motorInfo, activeAlerts) => {
-  const doc = new jsPDF();
-
-  // Header Title
-  doc.setFillColor(28, 25, 23); // Slate/Carbon
-  doc.rect(0, 0, 210, 38, 'F');
-  
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(15);
-  doc.setFont('helvetica', 'bold');
-  doc.text('Y.U.T.A. Condition Monitoring System', 14, 18);
-  
-  doc.setFontSize(9);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(214, 203, 190);
-  doc.text('IEEE Std 43-2013 Automated Insulation Resistance Compliance Report', 14, 25);
-  doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 31);
-
-  // Asset Specifications
-  doc.setTextColor(28, 25, 23);
-  doc.setFontSize(11);
-  doc.setFont('helvetica', 'bold');
-  doc.text('Target Asset Parameters', 14, 48);
-
-  const assetDetails = [
-    ['Monitored Motor:', motorInfo?.motor_name || 'Water Pump Induction Motor', 'Location:', motorInfo?.location || 'Pump Station'],
-    ['Operating Voltage:', `${motorInfo?.rated_voltage || 480} VAC (Sinusoidal Full-Wave)`, 'Insulation Class:', 'Class F (Reference: 40°C)'],
-    ['IEEE IRmin Baseline:', `${((motorInfo?.rated_voltage || 480) / 1000 + 1).toFixed(3)} MΩ`, 'Active Interlocks:', 'Dual-Factor Verified Safe']
-  ];
-
-  autoTable(doc, {
-    startY: 52,
-    body: assetDetails,
-    theme: 'plain',
-    styles: { fontSize: 8.5, cellPadding: 2 },
-    columnStyles: {
-      0: { fontStyle: 'bold', textColor: [87, 83, 78], cellWidth: 35 },
-      1: { cellWidth: 60 },
-      2: { fontStyle: 'bold', textColor: [87, 83, 78], cellWidth: 35 },
-      3: { cellWidth: 60 }
-    }
-  });
-
-  // Telemetry Audit Table
-  const tableRows = logs.map(l => [
-    l.formattedDate || new Date().toLocaleTimeString(),
-    `${l.raw_ir} MΩ`,
-    `${l.temperature} °C`,
-    `${l.corrected_ir} MΩ`,
-    `${l.ir_min || 1.48} MΩ`,
-    l.motor_status,
-    l.user_name || 'System Edge'
-  ]);
-
-  autoTable(doc, {
-    startY: doc.lastAutoTable.finalY + 8,
-    head: [['Timestamp', 'Raw IR', 'Temp', 'Corrected IR (40°C)', 'Threshold (IRmin)', 'Motor Status', 'Operator']],
-    body: tableRows,
-    theme: 'striped',
-    headStyles: { fillColor: [109, 40, 217], fontSize: 8.5, halign: 'center' },
-    bodyStyles: { fontSize: 8, halign: 'center' },
-    didParseCell: (data) => {
-      if (data.column.index === 5 && data.cell.raw === 'Requires Maintenance') {
-        data.cell.styles.textColor = [190, 18, 60];
-        data.cell.styles.fontStyle = 'bold';
-      }
-    }
-  });
-
-  // Footer Signature Block
-  const finalY = doc.lastAutoTable.finalY + 20;
-  doc.setFontSize(8.5);
-  doc.setTextColor(120, 113, 108);
-  doc.text('Certified By: ____________________________________', 14, finalY > 260 ? 275 : finalY);
-  doc.text('Field Engineer / Quality Assurance Sign-off', 14, (finalY > 260 ? 275 : finalY) + 6);
-
-  doc.save(`YUTA_Report_${Date.now()}.pdf`);
-};
+/**
+ * Triggers a browser print preview formatted for maintenance reports.
+ */
+export function exportMaintenanceReportPDF(telemetryLogs, activeMotor, activeAlerts) {
+  window.print();
+}

@@ -11,7 +11,9 @@ import {
   updateMotorAsset,
   deleteMotorAsset,
   provisionUserAccount, 
-  fetchRegisteredUsers 
+  fetchRegisteredUsers,
+  subscribeToLiveTelemetry,
+  fetchTelemetryHistory
 } from './services/telemetryService';
 import { exportTelemetryToCSV, exportMaintenanceReportPDF } from './utils/reportGenerator';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -38,7 +40,8 @@ export default function App() {
   ]);
   const [selectedMotorId, setSelectedMotorId] = useState('motor-001');
 
-  // Real-time Streams
+  // Real-time Gateway Streams
+  const [liveTelemetry, setLiveTelemetry] = useState(null);
   const [telemetryLogs, setTelemetryLogs] = useState([]);
   const [activeAlerts, setActiveAlerts] = useState([]);
   const [registeredUsers, setRegisteredUsers] = useState([]);
@@ -74,31 +77,7 @@ export default function App() {
     { id: 'settings', label: 'SYSTEM' },
   ];
 
-  useEffect(() => {
-    if (!currentUser) return;
-    const unsubMotors = subscribeToMotors((data) => {
-      if (data.length > 0) {
-        setMotors(data);
-        if (!data.some(m => m.id === selectedMotorId)) setSelectedMotorId(data[0].id);
-      }
-    });
-    return () => unsubMotors();
-  }, [currentUser]);
-
-  useEffect(() => {
-    if (!currentUser || !selectedMotorId) return;
-    const unsubTelemetry = subscribeToMotorTelemetry(selectedMotorId, (data) => setTelemetryLogs(data));
-    const unsubAlerts = subscribeToMotorAlerts(selectedMotorId, (alerts) => setActiveAlerts(alerts));
-    if (isAdmin) fetchRegisteredUsers().then(setRegisteredUsers).catch(console.error);
-
-    return () => {
-      unsubTelemetry();
-      unsubAlerts();
-    };
-  }, [currentUser, selectedMotorId, isAdmin]);
-
-  if (!currentUser) return <Login />;
-
+  // Active Motor Selection
   const activeMotor = motors.find(m => m.id === selectedMotorId) || motors[0] || {
     id: 'motor-001',
     motor_name: 'WATER PUMP 01',
@@ -106,16 +85,93 @@ export default function App() {
     rated_voltage: 480
   };
 
-  const latest = telemetryLogs.length > 0 ? telemetryLogs[telemetryLogs.length - 1] : {
-    raw_ir: 2.20,
-    corrected_ir: 2.20,
-    temperature: 38.5,
+  useEffect(() => {
+    if (!currentUser) return;
+    const unsubMotors = subscribeToMotors((data) => {
+      if (data && data.length > 0) {
+        setMotors(data);
+        if (!data.some(m => m.id === selectedMotorId)) setSelectedMotorId(data[0].id);
+      }
+    });
+    return () => unsubMotors();
+  }, [currentUser]);
+
+  // Connect to Live Telemetry & History Gateway
+  useEffect(() => {
+    if (!currentUser) return;
+
+    // 1. Subscribe to real-time /live node pushed by Python gateway
+    const unsubLive = subscribeToLiveTelemetry((data) => {
+      if (data) {
+        setLiveTelemetry(data);
+      }
+    });
+
+    // 2. Load historical logs from /history node
+    const loadHistory = async () => {
+      try {
+        const historyData = await fetchTelemetryHistory();
+        if (historyData && historyData.length > 0) {
+          const formatted = historyData.map((item) => ({
+            id: item.id || item.timestamp,
+            raw_ir: Number(item.rawIR || 0),
+            corrected_ir: Number(item.correctedIR || 0),
+            temperature: Number(item.temperatureC || 0),
+            rated_voltage: Number(item.motorVoltage || activeMotor.rated_voltage),
+            ir_min: Number(item.thresholdIR || (activeMotor.rated_voltage / 1000 + 1).toFixed(2)),
+            motor_status: item.status || 'Normal',
+            user_name: 'Python Gateway',
+            formattedDate: item.timestamp 
+              ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+              : 'LIVE'
+          }));
+          setTelemetryLogs(formatted);
+        } else {
+          // Fallback to asset-specific listener if /history is empty
+          subscribeToMotorTelemetry(selectedMotorId, (data) => setTelemetryLogs(data));
+        }
+      } catch (err) {
+        console.error("Failed to load telemetry history:", err);
+      }
+    };
+
+    loadHistory();
+
+    const unsubAlerts = subscribeToMotorAlerts(selectedMotorId, (alerts) => setActiveAlerts(alerts));
+    if (isAdmin) fetchRegisteredUsers().then(setRegisteredUsers).catch(console.error);
+
+    return () => {
+      unsubLive();
+      unsubAlerts();
+    };
+  }, [currentUser, selectedMotorId, isAdmin, activeMotor.rated_voltage]);
+
+  if (!currentUser) return <Login />;
+
+  // Prefer live stream from Gateway; fallback to latest log entry
+  const latest = liveTelemetry ? {
+    raw_ir: Number(liveTelemetry.rawIR || 0).toFixed(2),
+    corrected_ir: Number(liveTelemetry.correctedIR || 0).toFixed(2),
+    temperature: Number(liveTelemetry.temperatureC || 0).toFixed(1),
+    rated_voltage: Number(liveTelemetry.motorVoltage || activeMotor.rated_voltage),
+    motor_status: liveTelemetry.status || "Normal",
+    formattedDate: liveTelemetry.timestamp 
+      ? new Date(liveTelemetry.timestamp).toLocaleTimeString() 
+      : "SYNCHRONIZED"
+  } : (telemetryLogs.length > 0 ? telemetryLogs[telemetryLogs.length - 1] : {
+    raw_ir: "2.20",
+    corrected_ir: "2.20",
+    temperature: "38.5",
     rated_voltage: activeMotor.rated_voltage,
     motor_status: "Normal",
     formattedDate: "AWAITING INSPECTION"
-  };
+  });
 
-  const currentEval = evaluateMotorStatus(latest.raw_ir, latest.temperature, activeMotor.rated_voltage);
+  const currentEval = evaluateMotorStatus(
+    parseFloat(latest.raw_ir), 
+    parseFloat(latest.temperature), 
+    activeMotor.rated_voltage
+  );
 
   const handleExecuteAutomatedTest = async (e) => {
     e.preventDefault();
@@ -272,7 +328,6 @@ export default function App() {
       {/* Monolithic Desktop Sidebar */}
       <aside className="hidden md:flex w-64 border-r-2 border-[#e2d8cd] bg-[#f8f5ee] flex-col justify-between p-6 shrink-0">
         <div className="space-y-8">
-          {/* Brand Header */}
           <div className="border-b-2 border-[#e2d8cd] pb-5">
             <div className="flex items-center gap-2.5">
               <img src="/yuta-logo.png" alt="Y.U.T.A." className="w-7 h-7 object-contain" />
@@ -281,7 +336,6 @@ export default function App() {
             <p className="text-xs font-mono font-bold tracking-[0.2em] text-[#57534e] uppercase mt-1">TELEMETRY SYSTEM</p>
           </div>
 
-          {/* Plant Asset Switcher */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-mono font-bold tracking-[0.2em] text-[#44403c] uppercase">ASSET</span>
@@ -312,7 +366,6 @@ export default function App() {
             )}
           </div>
 
-          {/* Navigation Items */}
           <nav className="space-y-1">
             {navItems.map((item) => {
               const isActive = activeTab === item.id;
@@ -334,7 +387,6 @@ export default function App() {
           </nav>
         </div>
 
-        {/* User Card */}
         <div className="border-t-2 border-[#e2d8cd] pt-4 font-mono">
           <div className="flex items-center justify-between">
             <div className="overflow-hidden pr-2">
@@ -350,7 +402,7 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Main Exhibition Workspace */}
+      {/* Main Workspace */}
       <main className="flex-1 p-6 sm:p-10 lg:p-12 overflow-y-auto pb-24 md:pb-12 max-h-screen">
         <AnimatePresence mode="wait">
           
@@ -358,7 +410,6 @@ export default function App() {
           {activeTab === 'overview' && (
             <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-10 max-w-6xl mx-auto">
               
-              {/* Header */}
               <header className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-4 border-b-2 border-[#e2d8cd] pb-6">
                 <div>
                   <span className="text-xs font-mono font-bold tracking-[0.25em] text-[#57534e] uppercase">TELEMETRY DIAGNOSTIC</span>
@@ -384,7 +435,6 @@ export default function App() {
                 </div>
               </header>
 
-              {/* Active Alert Banner */}
               {activeAlerts.length > 0 && (
                 <div className="p-4 border-2 border-rose-300 bg-rose-50 flex items-start justify-between">
                   <div>
@@ -576,7 +626,7 @@ export default function App() {
                         <td className="py-4 px-6">{log.raw_ir} MΩ</td>
                         <td className="py-4 px-6 text-[#1c1917]">{log.temperature} °C</td>
                         <td className="py-4 px-6 text-purple-900 font-black">{log.corrected_ir} MΩ</td>
-                        <td className="py-4 px-6 text-[#57534e]">{log.ir_min || 1.48} MΩ</td>
+                        <td className="py-4 px-6 text-[#57534e]">{log.ir_min || (activeMotor.rated_voltage / 1000 + 1).toFixed(2)} MΩ</td>
                         <td className="py-4 px-6">
                           <span className={`text-xs uppercase tracking-widest font-black ${
                             log.motor_status === 'Normal' ? 'text-emerald-800' : 'text-rose-700'
@@ -584,7 +634,7 @@ export default function App() {
                             {log.motor_status}
                           </span>
                         </td>
-                        <td className="py-4 px-6 text-[#57534e]">{log.user_name || 'System AMU'}</td>
+                        <td className="py-4 px-6 text-[#57534e]">{log.user_name || 'Python Gateway'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -613,7 +663,9 @@ export default function App() {
                   </div>
                   <div className="mt-8 pt-4 border-t-2 border-[#e2d8cd] flex justify-between items-center text-xs">
                     <span className="text-[#57534e] uppercase font-bold">CONTACTOR</span>
-                    <span className="text-emerald-800 font-black uppercase tracking-widest">DISCONNECTED</span>
+                    <span className="text-emerald-800 font-black uppercase tracking-widest">
+                      {liveTelemetry && !liveTelemetry.safetyOK ? "WARNING: ENERGIZED" : "DISCONNECTED"}
+                    </span>
                   </div>
                 </div>
 
@@ -627,7 +679,9 @@ export default function App() {
                   </div>
                   <div className="mt-8 pt-4 border-t-2 border-[#e2d8cd] flex justify-between items-center text-xs">
                     <span className="text-[#57534e] uppercase font-bold">TERMINAL VOLTAGE</span>
-                    <span className="text-emerald-800 font-black uppercase tracking-widest">0.00 VAC RMS</span>
+                    <span className="text-emerald-800 font-black uppercase tracking-widest">
+                      {liveTelemetry && !liveTelemetry.safetyOK ? "LIVE RESIDUAL VOLTAGE" : "0.00 VAC RMS"}
+                    </span>
                   </div>
                 </div>
               </div>
