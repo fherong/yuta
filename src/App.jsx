@@ -17,26 +17,27 @@ import { exportTelemetryToCSV, exportMaintenanceReportPDF } from './utils/report
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   LogOut, 
-  X, 
-  Menu,
   Edit3,
   Trash2,
   Plus,
   ArrowRight,
-  ShieldCheck,
   CheckCircle2,
-  Lock,
   ArrowLeft,
-  Radio
+  Radio,
+  LayoutGrid,
+  Activity,
+  FileText,
+  ShieldCheck,
+  Users,
+  LogOut as LogOutIcon
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 export default function App() {
   const { currentUser, logout, isAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState('fleet');
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   
-  // Default Fleet (Includes the mock unit mapped to mock_gateway.py)
+  // Default Fleet
   const defaultMotors = [
     { id: 'motor-mock', motor_name: 'MOCK GATEWAY TEST RIG', location: 'LAB BENCH (SIMULATOR)', rated_voltage: 380 },
     { id: 'motor-001', motor_name: 'WATER PUMP 01', location: 'PUMP ROOM BASEMENT', rated_voltage: 480 },
@@ -73,22 +74,21 @@ export default function App() {
   const [newRole, setNewRole] = useState('Employee');
   const [userCreatedMessage, setUserCreatedMessage] = useState('');
 
-  // Dynamic tabs: Station tabs appear only after a motor is selected
+  // Dynamic tabs mapping: Icon used for mobile dock, Text used on desktop
   const navItems = [
-    { id: 'fleet', label: 'FLEET', section: 'global' },
+    { id: 'fleet', label: 'FLEET', icon: LayoutGrid, section: 'global' },
     ...(selectedMotor ? [
-      { id: 'overview', label: 'MONITOR', section: 'station' },
-      { id: 'telemetry', label: 'LOGS', section: 'station' },
-      { id: 'safety', label: 'INTERLOCKS', section: 'station' },
+      { id: 'overview', label: 'MONITOR', icon: Activity, section: 'station' },
+      { id: 'telemetry', label: 'LOGS', icon: FileText, section: 'station' },
+      { id: 'safety', label: 'INTERLOCKS', icon: ShieldCheck, section: 'station' },
     ] : []),
-    { id: 'settings', label: 'USERS & ACCESS', section: 'global' },
+    { id: 'settings', label: 'USERS & ACCESS', mobileLabel: 'ACCESS', icon: Users, section: 'global' },
   ];
 
   useEffect(() => {
     if (!currentUser) return;
     const unsubMotors = subscribeToMotors((data) => {
       if (data && data.length > 0) {
-        // Ensure mock unit exists alongside custom units
         const hasMock = data.some(m => m.id === 'motor-mock');
         setMotors(hasMock ? data : [defaultMotors[0], ...data]);
       } else {
@@ -101,18 +101,16 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return;
 
-    // Listen to /live pushed by mock_gateway.py
     const unsubLive = subscribeToLiveTelemetry((data) => {
       if (data) setLiveTelemetry(data);
     });
 
-    // Fetch history records from /history pushed by mock_gateway.py
     const loadHistory = async () => {
       const historyData = await fetchTelemetryHistory();
       if (historyData && historyData.length > 0) {
         const formatted = historyData.map((item) => ({
           id: item.id || item.timestamp,
-          motor_id: item.motorId || 'motor-mock', // default mock data to the mock rig
+          motor_id: item.motorId || 'motor-mock',
           raw_ir: Number(item.rawIR || 0),
           corrected_ir: Number(item.correctedIR || 0),
           temperature: Number(item.temperatureC || 0),
@@ -130,7 +128,7 @@ export default function App() {
     };
 
     loadHistory();
-    const interval = setInterval(loadHistory, 4000); // Poll history while mock runs
+    const interval = setInterval(loadHistory, 4000);
 
     if (isAdmin) fetchRegisteredUsers().then(setRegisteredUsers).catch(console.error);
 
@@ -152,7 +150,6 @@ export default function App() {
     setActiveTab('fleet');
   };
 
-  // Motor-specific logs or fallback to all mock logs if selecting the mock motor
   const filteredLogs = selectedMotor?.id === 'motor-mock'
     ? telemetryLogs
     : telemetryLogs.filter(l => l.motor_id === selectedMotor?.id);
@@ -225,18 +222,34 @@ export default function App() {
   return (
     <div className="flex flex-col md:flex-row min-h-screen bg-[#fbf9f5] text-[#1c1917] selection:bg-purple-700 selection:text-white">
       
-      {/* Mobile Topbar */}
-      <div className="md:hidden flex items-center justify-between px-6 py-4 border-b-2 border-[#e2d8cd] bg-[#fbf9f5] sticky top-0 z-40">
-        <div className="flex items-center gap-2">
+      {/* Tablet / Mobile Header Bar */}
+      <header className="md:hidden flex items-center justify-between px-5 py-3 border-b-2 border-[#e2d8cd] bg-[#fbf9f5]/90 backdrop-blur-md sticky top-0 z-40">
+        <div className="flex items-center gap-2.5">
           <img src="/yuta-logo.png" alt="Y.U.T.A." className="w-6 h-6 object-contain" />
-          <span className="text-sm font-mono font-bold tracking-[0.2em]">Y.U.T.A.</span>
+          <div>
+            <span className="text-xs font-mono font-black tracking-[0.25em] text-[#1c1917]">Y.U.T.A.</span>
+            {selectedMotor && (
+              <span className="text-[10px] font-mono font-bold text-purple-800 block uppercase leading-tight">
+                {selectedMotor.motor_name}
+              </span>
+            )}
+          </div>
         </div>
-        <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-2">
-          {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-        </button>
-      </div>
+        <div className="flex items-center gap-3 font-mono">
+          <span className="text-[10px] font-bold text-[#57534e] uppercase">
+            ID: {currentUser.employeeId || 'ADMIN'}
+          </span>
+          <button 
+            onClick={logout} 
+            className="p-1.5 text-[#57534e] hover:text-rose-700 transition" 
+            title="Disconnect"
+          >
+            <LogOutIcon className="w-4 h-4 stroke-[2.5]" />
+          </button>
+        </div>
+      </header>
 
-      {/* Dynamic Desktop Sidebar */}
+      {/* Desktop Monolithic Sidebar */}
       <aside className="hidden md:flex w-64 border-r-2 border-[#e2d8cd] bg-[#f8f5ee] flex-col justify-between p-6 shrink-0 font-mono">
         <div className="space-y-8">
           <div className="border-b-2 border-[#e2d8cd] pb-5">
@@ -247,19 +260,18 @@ export default function App() {
             <p className="text-xs font-bold tracking-[0.2em] text-[#57534e] uppercase mt-1">TELEMETRY SYSTEM</p>
           </div>
 
-          {/* Active Pump Indicator */}
           {selectedMotor && (
             <div className="p-3 bg-[#ede5d8] border border-[#cbd5e1]">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black tracking-widest text-purple-800 uppercase">ACTIVE STATION</span>
-                <button onClick={handleCloseActiveMotor} className="text-xs text-[#57534e] hover:text-[#1c1917]" title="Exit station">✕</button>
+                <button onClick={handleCloseActiveMotor} className="text-xs text-[#57534e] hover:text-[#1c1917] font-bold cursor-pointer" title="Exit station">✕</button>
               </div>
               <p className="text-xs font-black uppercase truncate mt-1">{selectedMotor.motor_name}</p>
               <p className="text-[10px] font-bold text-[#57534e] truncate">{selectedMotor.location}</p>
             </div>
           )}
 
-          {/* Dynamic Nav Items */}
+          {/* Desktop Nav Items */}
           <nav className="space-y-1">
             {navItems.map((item) => {
               const isActive = activeTab === item.id;
@@ -289,7 +301,7 @@ export default function App() {
                 ID: {currentUser.employeeId || 'ADMIN-01'} [{currentUser.role}]
               </span>
             </div>
-            <button onClick={logout} className="text-[#57534e] hover:text-[#1c1917] transition p-1" title="Sign Out">
+            <button onClick={logout} className="text-[#57534e] hover:text-[#1c1917] transition p-1 cursor-pointer" title="Sign Out">
               <LogOut className="w-4 h-4 stroke-[2.5]" />
             </button>
           </div>
@@ -297,7 +309,7 @@ export default function App() {
       </aside>
 
       {/* Main Exhibition Workspace */}
-      <main className="flex-1 p-6 sm:p-10 lg:p-12 overflow-y-auto pb-24 md:pb-12 max-h-screen">
+      <main className="flex-1 p-5 sm:p-10 lg:p-12 overflow-y-auto pb-28 md:pb-12 max-h-screen">
         <AnimatePresence mode="wait">
           
           {/* TAB 1: FLEET OVERVIEW */}
@@ -307,7 +319,7 @@ export default function App() {
                 <div>
                   <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">FLEET MONITOR</span>
                   <h2 className="text-3xl font-extrabold text-[#1c1917] tracking-tight mt-1">Water Pump Stations</h2>
-                  <p className="text-xs text-[#44403c] font-bold mt-1">Select a pump station to unlock live monitoring, sensor logs, and safety interlocks</p>
+                  <p className="text-xs text-[#44403c] font-bold mt-1">Tap a pump station to unlock live monitoring, sensor logs, and safety interlocks</p>
                 </div>
                 {isAdmin && (
                   <button 
@@ -326,7 +338,7 @@ export default function App() {
                     <div 
                       key={m.id}
                       onClick={() => handleSelectMotor(m)}
-                      className={`border-2 p-6 flex flex-col justify-between transition-all cursor-pointer group shadow-sm ${
+                      className={`border-2 p-6 flex flex-col justify-between transition-all cursor-pointer group shadow-sm active:scale-[0.99] ${
                         isMock 
                           ? 'border-purple-600 bg-purple-50/40 hover:bg-purple-50' 
                           : 'border-[#e2d8cd] bg-[#f8f5ee] hover:border-purple-700 hover:bg-[#faf7f2]'
@@ -432,7 +444,7 @@ export default function App() {
               <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
                 <div className="flex justify-between items-baseline mb-4">
                   <h3 className="text-sm font-black tracking-[0.2em] uppercase">DEGRADATION TIMELINE</h3>
-                  <span className="text-xs font-bold text-[#57534e]">{filteredLogs.length} LOGGED SAMPLES</span>
+                  <span className="text-xs font-bold text-[#57534e]">{filteredLogs.length} SAMPLES</span>
                 </div>
                 <div className="h-64 w-full">
                   <ResponsiveContainer width="100%" height="100%">
@@ -448,7 +460,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Test Sequence Form */}
+              {/* Test Injection Sequence */}
               <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
                 <h3 className="text-sm font-black tracking-[0.2em] uppercase mb-4">MANUAL TEST INJECTION</h3>
                 {testExecutionError && <div className="p-3 mb-4 bg-rose-100 border border-rose-300 text-rose-800 text-xs font-bold">{testExecutionError}</div>}
@@ -645,6 +657,39 @@ export default function App() {
 
         </AnimatePresence>
       </main>
+
+      {/* Instagram-Style Bottom Navigation Dock (Tablet & Mobile only) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-[#fbf9f5]/95 backdrop-blur-lg border-t-2 border-[#e2d8cd] px-2 py-1.5 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] font-mono">
+        <div className="flex items-center justify-around max-w-lg mx-auto">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            const displayLabel = item.mobileLabel || item.label;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                className={`relative flex flex-col items-center justify-center py-1.5 px-3 rounded-lg transition-all active:scale-90 ${
+                  isActive ? 'text-purple-800' : 'text-[#78716c] hover:text-[#1c1917]'
+                }`}
+              >
+                <div className="relative">
+                  <Icon className={`w-5 h-5 ${isActive ? 'stroke-[2.5]' : 'stroke-[1.8]'}`} />
+                  {isActive && (
+                    <motion.div 
+                      layoutId="bottomTabIndicator"
+                      className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-purple-700" 
+                    />
+                  )}
+                </div>
+                <span className={`text-[9px] uppercase tracking-wider mt-1.5 ${isActive ? 'font-black text-[#1c1917]' : 'font-bold text-[#78716c]'}`}>
+                  {displayLabel}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
 
       {/* Admin Add Motor Modal */}
       {showAddMotorModal && (
