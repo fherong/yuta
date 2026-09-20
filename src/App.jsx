@@ -4,13 +4,11 @@ import { Login } from './components/Login';
 import { evaluateMotorStatus, IEEE_VOLTAGE_THRESHOLDS } from './utils/ieeeStandards';
 import { 
   subscribeToMotors,
-  subscribeToMotorTelemetry, 
-  subscribeToMotorAlerts, 
   logTestReading, 
   createMotorAsset,
   updateMotorAsset,
   deleteMotorAsset,
-  provisionUserAccount, 
+  provisionUserWithId, 
   fetchRegisteredUsers,
   subscribeToLiveTelemetry,
   fetchTelemetryHistory
@@ -18,43 +16,47 @@ import {
 import { exportTelemetryToCSV, exportMaintenanceReportPDF } from './utils/reportGenerator';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  ChevronDown, 
   LogOut, 
   X, 
   Menu,
   Edit3,
-  Trash2
+  Trash2,
+  Plus,
+  ArrowRight,
+  ShieldCheck,
+  CheckCircle2,
+  Lock,
+  ArrowLeft,
+  Radio
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 export default function App() {
   const { currentUser, logout, isAdmin } = useAuth();
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState('fleet');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   
-  // Factory Motors Fleet
-  const [motors, setMotors] = useState([
+  // Default Fleet (Includes the mock unit mapped to mock_gateway.py)
+  const defaultMotors = [
+    { id: 'motor-mock', motor_name: 'MOCK GATEWAY TEST RIG', location: 'LAB BENCH (SIMULATOR)', rated_voltage: 380 },
     { id: 'motor-001', motor_name: 'WATER PUMP 01', location: 'PUMP ROOM BASEMENT', rated_voltage: 480 },
     { id: 'motor-002', motor_name: 'BOOSTER PUMP 02', location: 'HVAC ROOFTOP', rated_voltage: 380 },
     { id: 'motor-003', motor_name: 'DRAINAGE PUMP 03', location: 'SUMP BASIN', rated_voltage: 240 }
-  ]);
-  const [selectedMotorId, setSelectedMotorId] = useState('motor-001');
+  ];
 
-  // Real-time Gateway Streams
+  const [motors, setMotors] = useState(defaultMotors);
+  const [selectedMotor, setSelectedMotor] = useState(null);
+
+  // Real-time Streams
   const [liveTelemetry, setLiveTelemetry] = useState(null);
   const [telemetryLogs, setTelemetryLogs] = useState([]);
-  const [activeAlerts, setActiveAlerts] = useState([]);
   const [registeredUsers, setRegisteredUsers] = useState([]);
 
   // Modals & User Forms
   const [showAddMotorModal, setShowAddMotorModal] = useState(false);
   const [newMotorName, setNewMotorName] = useState('');
   const [newMotorLocation, setNewMotorLocation] = useState('');
-  const [newMotorVoltage, setNewMotorVoltage] = useState(480);
-
-  // Edit Motor State
-  const [editingMotor, setEditingMotor] = useState(null);
-  const [showEditMotorModal, setShowEditMotorModal] = useState(false);
+  const [newMotorVoltage, setNewMotorVoltage] = useState(380);
 
   // Manual Safety Simulation Trigger
   const [simRawIR, setSimRawIR] = useState(2.35);
@@ -64,131 +66,136 @@ export default function App() {
   const [isExecutingTest, setIsExecutingTest] = useState(false);
   const [testExecutionError, setTestExecutionError] = useState('');
 
-  // Admin User Provisioning
+  // Admin User Provisioning by Employee ID
+  const [newEmpId, setNewEmpId] = useState('');
   const [newFullname, setNewFullname] = useState('');
-  const [newEmail, setNewEmail] = useState('');
+  const [newPin, setNewPin] = useState('1234');
   const [newRole, setNewRole] = useState('Employee');
   const [userCreatedMessage, setUserCreatedMessage] = useState('');
 
+  // Dynamic tabs: Station tabs appear only after a motor is selected
   const navItems = [
-    { id: 'overview', label: 'MONITOR' },
-    { id: 'telemetry', label: 'LOGS' },
-    { id: 'safety', label: 'INTERLOCKS' },
-    { id: 'settings', label: 'SYSTEM' },
+    { id: 'fleet', label: 'FLEET', section: 'global' },
+    ...(selectedMotor ? [
+      { id: 'overview', label: 'MONITOR', section: 'station' },
+      { id: 'telemetry', label: 'LOGS', section: 'station' },
+      { id: 'safety', label: 'INTERLOCKS', section: 'station' },
+    ] : []),
+    { id: 'settings', label: 'USERS & ACCESS', section: 'global' },
   ];
-
-  // Active Motor Selection
-  const activeMotor = motors.find(m => m.id === selectedMotorId) || motors[0] || {
-    id: 'motor-001',
-    motor_name: 'WATER PUMP 01',
-    location: 'PUMP ROOM BASEMENT',
-    rated_voltage: 480
-  };
 
   useEffect(() => {
     if (!currentUser) return;
     const unsubMotors = subscribeToMotors((data) => {
       if (data && data.length > 0) {
-        setMotors(data);
-        if (!data.some(m => m.id === selectedMotorId)) setSelectedMotorId(data[0].id);
+        // Ensure mock unit exists alongside custom units
+        const hasMock = data.some(m => m.id === 'motor-mock');
+        setMotors(hasMock ? data : [defaultMotors[0], ...data]);
+      } else {
+        setMotors(defaultMotors);
       }
     });
     return () => unsubMotors();
   }, [currentUser]);
 
-  // Connect to Live Telemetry & History Gateway
   useEffect(() => {
     if (!currentUser) return;
 
-    // 1. Subscribe to real-time /live node pushed by Python gateway
+    // Listen to /live pushed by mock_gateway.py
     const unsubLive = subscribeToLiveTelemetry((data) => {
-      if (data) {
-        setLiveTelemetry(data);
-      }
+      if (data) setLiveTelemetry(data);
     });
 
-    // 2. Load historical logs from /history node
+    // Fetch history records from /history pushed by mock_gateway.py
     const loadHistory = async () => {
-      try {
-        const historyData = await fetchTelemetryHistory();
-        if (historyData && historyData.length > 0) {
-          const formatted = historyData.map((item) => ({
-            id: item.id || item.timestamp,
-            raw_ir: Number(item.rawIR || 0),
-            corrected_ir: Number(item.correctedIR || 0),
-            temperature: Number(item.temperatureC || 0),
-            rated_voltage: Number(item.motorVoltage || activeMotor.rated_voltage),
-            ir_min: Number(item.thresholdIR || (activeMotor.rated_voltage / 1000 + 1).toFixed(2)),
-            motor_status: item.status || 'Normal',
-            user_name: 'Python Gateway',
-            formattedDate: item.timestamp 
-              ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-              : 'LIVE'
-          }));
-          setTelemetryLogs(formatted);
-        } else {
-          // Fallback to asset-specific listener if /history is empty
-          subscribeToMotorTelemetry(selectedMotorId, (data) => setTelemetryLogs(data));
-        }
-      } catch (err) {
-        console.error("Failed to load telemetry history:", err);
+      const historyData = await fetchTelemetryHistory();
+      if (historyData && historyData.length > 0) {
+        const formatted = historyData.map((item) => ({
+          id: item.id || item.timestamp,
+          motor_id: item.motorId || 'motor-mock', // default mock data to the mock rig
+          raw_ir: Number(item.rawIR || 0),
+          corrected_ir: Number(item.correctedIR || 0),
+          temperature: Number(item.temperatureC || 0),
+          rated_voltage: Number(item.motorVoltage || 380),
+          ir_min: Number(item.thresholdIR || 1.38),
+          motor_status: item.status || 'Normal',
+          operator_id: item.employeeId || 'GATEWAY-01',
+          operator_name: item.operatorName || 'Python Gateway AMU',
+          formattedDate: item.timestamp 
+            ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+            : 'LIVE'
+        }));
+        setTelemetryLogs(formatted);
       }
     };
 
     loadHistory();
+    const interval = setInterval(loadHistory, 4000); // Poll history while mock runs
 
-    const unsubAlerts = subscribeToMotorAlerts(selectedMotorId, (alerts) => setActiveAlerts(alerts));
     if (isAdmin) fetchRegisteredUsers().then(setRegisteredUsers).catch(console.error);
 
     return () => {
       unsubLive();
-      unsubAlerts();
+      clearInterval(interval);
     };
-  }, [currentUser, selectedMotorId, isAdmin, activeMotor.rated_voltage]);
+  }, [currentUser, isAdmin]);
 
   if (!currentUser) return <Login />;
 
-  // Prefer live stream from Gateway; fallback to latest log entry
-  const latest = liveTelemetry ? {
+  const handleSelectMotor = (motor) => {
+    setSelectedMotor(motor);
+    setActiveTab('overview');
+  };
+
+  const handleCloseActiveMotor = () => {
+    setSelectedMotor(null);
+    setActiveTab('fleet');
+  };
+
+  // Motor-specific logs or fallback to all mock logs if selecting the mock motor
+  const filteredLogs = selectedMotor?.id === 'motor-mock'
+    ? telemetryLogs
+    : telemetryLogs.filter(l => l.motor_id === selectedMotor?.id);
+
+  const latest = (selectedMotor?.id === 'motor-mock' && liveTelemetry) ? {
     raw_ir: Number(liveTelemetry.rawIR || 0).toFixed(2),
     corrected_ir: Number(liveTelemetry.correctedIR || 0).toFixed(2),
     temperature: Number(liveTelemetry.temperatureC || 0).toFixed(1),
-    rated_voltage: Number(liveTelemetry.motorVoltage || activeMotor.rated_voltage),
     motor_status: liveTelemetry.status || "Normal",
-    formattedDate: liveTelemetry.timestamp 
-      ? new Date(liveTelemetry.timestamp).toLocaleTimeString() 
-      : "SYNCHRONIZED"
-  } : (telemetryLogs.length > 0 ? telemetryLogs[telemetryLogs.length - 1] : {
+    formattedDate: liveTelemetry.timestamp ? new Date(liveTelemetry.timestamp).toLocaleTimeString() : "SYNCED"
+  } : (filteredLogs.length > 0 ? filteredLogs[0] : {
     raw_ir: "2.20",
     corrected_ir: "2.20",
     temperature: "38.5",
-    rated_voltage: activeMotor.rated_voltage,
     motor_status: "Normal",
-    formattedDate: "AWAITING INSPECTION"
+    formattedDate: "AWAITING TEST"
   });
 
-  const currentEval = evaluateMotorStatus(
+  const currentEval = selectedMotor ? evaluateMotorStatus(
     parseFloat(latest.raw_ir), 
     parseFloat(latest.temperature), 
-    activeMotor.rated_voltage
-  );
+    selectedMotor.rated_voltage
+  ) : { isSafe: true, ir40: 2.20, irMin: 1.38 };
 
   const handleExecuteAutomatedTest = async (e) => {
     e.preventDefault();
+    if (!selectedMotor) return;
     setTestExecutionError('');
     setIsExecutingTest(true);
 
     try {
       await logTestReading({
-        motorId: activeMotor.id,
+        motorId: selectedMotor.id,
         rawIR: simRawIR,
         temperature: simTemp,
-        ratedVoltage: activeMotor.rated_voltage,
-        userId: currentUser.uid,
-        userName: currentUser.fullname || currentUser.email,
+        ratedVoltage: selectedMotor.rated_voltage,
+        employeeId: currentUser.employeeId || currentUser.uid,
+        operatorName: currentUser.fullname || currentUser.email,
         ncAuxSafe: simNcAux,
         zeroVoltageSafe: simZeroVolt
       });
+      const updatedHistory = await fetchTelemetryHistory();
+      setTelemetryLogs(updatedHistory);
     } catch (err) {
       setTestExecutionError(err.message);
     } finally {
@@ -196,76 +203,18 @@ export default function App() {
     }
   };
 
-  const handleCreateMotor = async (e) => {
+  const handleProvisionEmployee = async (e) => {
     e.preventDefault();
     try {
-      const newId = await createMotorAsset({
-        motorName: newMotorName,
-        location: newMotorLocation,
-        ratedVoltage: newMotorVoltage
-      });
-      setSelectedMotorId(newId);
-      setShowAddMotorModal(false);
-      setNewMotorName('');
-      setNewMotorLocation('');
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleOpenEditModal = (motor) => {
-    setEditingMotor({
-      id: motor.id,
-      motor_name: motor.motor_name,
-      location: motor.location,
-      rated_voltage: motor.rated_voltage
-    });
-    setShowEditMotorModal(true);
-  };
-
-  const handleSaveMotorEdit = async (e) => {
-    e.preventDefault();
-    if (!editingMotor) return;
-    try {
-      await updateMotorAsset(editingMotor.id, {
-        motorName: editingMotor.motor_name,
-        location: editingMotor.location,
-        ratedVoltage: editingMotor.rated_voltage
-      });
-      setShowEditMotorModal(false);
-      setEditingMotor(null);
-    } catch (err) {
-      console.error("Failed to update motor:", err);
-    }
-  };
-
-  const handleDeleteMotor = async (motorId, motorName) => {
-    const confirmed = window.confirm(`Are you sure you want to remove ${motorName}? This action cannot be undone.`);
-    if (!confirmed) return;
-
-    try {
-      await deleteMotorAsset(motorId);
-      const remaining = motors.filter(m => m.id !== motorId);
-      if (remaining.length > 0) {
-        setSelectedMotorId(remaining[0].id);
-      }
-    } catch (err) {
-      console.error("Failed to delete motor:", err);
-    }
-  };
-
-  const handleProvisionUser = async (e) => {
-    e.preventDefault();
-    try {
-      const generatedUid = `user-${Date.now()}`;
-      await provisionUserAccount(generatedUid, {
+      await provisionUserWithId(newEmpId, {
         fullname: newFullname,
-        email: newEmail,
-        role: newRole
+        role: newRole,
+        pin: newPin
       });
-      setUserCreatedMessage(`PROVISIONED: ${newFullname} (${newRole})`);
+      setUserCreatedMessage(`SAVED: ${newFullname} (ID: ${newEmpId})`);
+      setNewEmpId('');
       setNewFullname('');
-      setNewEmail('');
+      setNewPin('1234');
       const updated = await fetchRegisteredUsers();
       setRegisteredUsers(updated);
     } catch (err) {
@@ -276,96 +225,41 @@ export default function App() {
   return (
     <div className="flex flex-col md:flex-row min-h-screen bg-[#fbf9f5] text-[#1c1917] selection:bg-purple-700 selection:text-white">
       
-      {/* Mobile Header */}
+      {/* Mobile Topbar */}
       <div className="md:hidden flex items-center justify-between px-6 py-4 border-b-2 border-[#e2d8cd] bg-[#fbf9f5] sticky top-0 z-40">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
           <img src="/yuta-logo.png" alt="Y.U.T.A." className="w-6 h-6 object-contain" />
-          <div>
-            <span className="text-sm font-mono font-bold tracking-[0.2em] text-[#1c1917]">Y.U.T.A.</span>
-            <span className="text-xs font-mono font-bold text-[#57534e] block uppercase">{activeMotor.motor_name}</span>
-          </div>
+          <span className="text-sm font-mono font-bold tracking-[0.2em]">Y.U.T.A.</span>
         </div>
-        <button 
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="p-2 text-[#44403c] hover:text-[#1c1917]"
-        >
-          {mobileMenuOpen ? <X className="w-5 h-5 stroke-[2.5]" /> : <Menu className="w-5 h-5 stroke-[2.5]" />}
+        <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-2">
+          {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
         </button>
       </div>
 
-      {/* Mobile Drawer */}
-      <AnimatePresence>
-        {mobileMenuOpen && (
-          <motion.div 
-            initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-            className="md:hidden bg-[#f3eee6] border-b-2 border-[#e2d8cd] p-6 space-y-5 z-30 shadow-md font-mono"
-          >
-            <div>
-              <label className="text-xs font-bold tracking-widest text-[#44403c] uppercase block mb-2">TARGET ASSET</label>
-              <select
-                value={selectedMotorId}
-                onChange={(e) => {
-                  setSelectedMotorId(e.target.value);
-                  setMobileMenuOpen(false);
-                }}
-                className="w-full bg-[#fbf9f5] border-2 border-[#cbd5e1] text-xs font-bold text-[#1c1917] py-3 px-3 rounded-none focus:outline-none"
-              >
-                {motors.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.motor_name} ({m.rated_voltage}V)
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="flex justify-between items-center text-xs font-bold text-[#44403c] pt-4 border-t-2 border-[#e2d8cd]">
-              <span>{currentUser.fullname || currentUser.email} [{currentUser.role}]</span>
-              <button onClick={logout} className="text-purple-700 uppercase tracking-widest font-black">DISCONNECT</button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Monolithic Desktop Sidebar */}
-      <aside className="hidden md:flex w-64 border-r-2 border-[#e2d8cd] bg-[#f8f5ee] flex-col justify-between p-6 shrink-0">
+      {/* Dynamic Desktop Sidebar */}
+      <aside className="hidden md:flex w-64 border-r-2 border-[#e2d8cd] bg-[#f8f5ee] flex-col justify-between p-6 shrink-0 font-mono">
         <div className="space-y-8">
           <div className="border-b-2 border-[#e2d8cd] pb-5">
             <div className="flex items-center gap-2.5">
               <img src="/yuta-logo.png" alt="Y.U.T.A." className="w-7 h-7 object-contain" />
-              <h1 className="font-mono text-base font-black tracking-[0.25em] text-[#1c1917]">Y.U.T.A.</h1>
+              <h1 className="text-base font-black tracking-[0.25em]">Y.U.T.A.</h1>
             </div>
-            <p className="text-xs font-mono font-bold tracking-[0.2em] text-[#57534e] uppercase mt-1">TELEMETRY SYSTEM</p>
+            <p className="text-xs font-bold tracking-[0.2em] text-[#57534e] uppercase mt-1">TELEMETRY SYSTEM</p>
           </div>
 
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-mono font-bold tracking-[0.2em] text-[#44403c] uppercase">ASSET</span>
-              <span className="text-xs font-mono font-bold text-[#57534e]">{motors.length} UNITS</span>
+          {/* Active Pump Indicator */}
+          {selectedMotor && (
+            <div className="p-3 bg-[#ede5d8] border border-[#cbd5e1]">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black tracking-widest text-purple-800 uppercase">ACTIVE STATION</span>
+                <button onClick={handleCloseActiveMotor} className="text-xs text-[#57534e] hover:text-[#1c1917]" title="Exit station">✕</button>
+              </div>
+              <p className="text-xs font-black uppercase truncate mt-1">{selectedMotor.motor_name}</p>
+              <p className="text-[10px] font-bold text-[#57534e] truncate">{selectedMotor.location}</p>
             </div>
-            <div className="relative">
-              <select
-                value={selectedMotorId}
-                onChange={(e) => setSelectedMotorId(e.target.value)}
-                className="w-full bg-[#fbf9f5] border-2 border-[#cbd5e1] hover:border-[#94a3b8] text-[#1c1917] text-xs font-mono font-bold py-2.5 px-3 pr-8 appearance-none focus:outline-none focus:border-purple-700 transition cursor-pointer rounded-none shadow-sm"
-              >
-                {motors.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.motor_name}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-4 h-4 text-[#44403c] stroke-[2.5] absolute right-2.5 top-3 pointer-events-none" />
-            </div>
-            
-            {isAdmin && (
-              <button 
-                onClick={() => setShowAddMotorModal(true)}
-                className="w-full mt-2.5 py-2 border-2 border-[#cbd5e1] bg-[#f3eee6] hover:bg-[#ede5d8] text-xs font-mono font-bold tracking-widest text-[#292524] uppercase transition cursor-pointer"
-              >
-                + ADD MOTOR
-              </button>
-            )}
-          </div>
+          )}
 
+          {/* Dynamic Nav Items */}
           <nav className="space-y-1">
             {navItems.map((item) => {
               const isActive = activeTab === item.id;
@@ -373,13 +267,13 @@ export default function App() {
                 <button
                   key={item.id}
                   onClick={() => setActiveTab(item.id)}
-                  className={`w-full text-left py-2.5 px-3 text-xs font-mono tracking-[0.18em] transition-all flex items-center justify-between cursor-pointer ${
+                  className={`w-full text-left py-2.5 px-3 text-xs tracking-[0.18em] transition-all flex items-center justify-between cursor-pointer ${
                     isActive 
                       ? 'bg-[#ede5d8] text-[#1c1917] border-l-4 border-purple-700 pl-4 font-black' 
                       : 'text-[#57534e] hover:text-[#1c1917] hover:bg-[#f3eee6] font-bold'
-                  }`}
+                  } ${item.section === 'station' ? 'pl-5' : ''}`}
                 >
-                  <span>{item.label}</span>
+                  <span>{item.section === 'station' ? `↳ ${item.label}` : item.label}</span>
                   {isActive && <span className="text-xs text-purple-700 font-black">●</span>}
                 </button>
               );
@@ -387,430 +281,354 @@ export default function App() {
           </nav>
         </div>
 
-        <div className="border-t-2 border-[#e2d8cd] pt-4 font-mono">
+        <div className="border-t-2 border-[#e2d8cd] pt-4">
           <div className="flex items-center justify-between">
             <div className="overflow-hidden pr-2">
-              <p className="text-xs font-bold text-[#1c1917] truncate">{currentUser.fullname || currentUser.email}</p>
+              <p className="text-xs font-bold truncate">{currentUser.fullname || currentUser.email}</p>
               <span className="text-[10px] font-bold tracking-widest text-purple-700 uppercase mt-0.5 block">
-                {currentUser.role}
+                ID: {currentUser.employeeId || 'ADMIN-01'} [{currentUser.role}]
               </span>
             </div>
-            <button onClick={logout} className="text-[#57534e] hover:text-[#1c1917] transition p-1 cursor-pointer" title="Sign Out">
+            <button onClick={logout} className="text-[#57534e] hover:text-[#1c1917] transition p-1" title="Sign Out">
               <LogOut className="w-4 h-4 stroke-[2.5]" />
             </button>
           </div>
         </div>
       </aside>
 
-      {/* Main Workspace */}
+      {/* Main Exhibition Workspace */}
       <main className="flex-1 p-6 sm:p-10 lg:p-12 overflow-y-auto pb-24 md:pb-12 max-h-screen">
         <AnimatePresence mode="wait">
           
-          {/* TAB 1: OVERVIEW HUD */}
-          {activeTab === 'overview' && (
-            <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-10 max-w-6xl mx-auto">
-              
+          {/* TAB 1: FLEET OVERVIEW */}
+          {activeTab === 'fleet' && (
+            <motion.div key="fleet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 max-w-6xl mx-auto font-mono">
+              <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-3 border-b-2 border-[#e2d8cd] pb-6">
+                <div>
+                  <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">FLEET MONITOR</span>
+                  <h2 className="text-3xl font-extrabold text-[#1c1917] tracking-tight mt-1">Water Pump Stations</h2>
+                  <p className="text-xs text-[#44403c] font-bold mt-1">Select a pump station to unlock live monitoring, sensor logs, and safety interlocks</p>
+                </div>
+                {isAdmin && (
+                  <button 
+                    onClick={() => setShowAddMotorModal(true)}
+                    className="px-4 py-2 bg-[#1c1917] hover:bg-black text-[#fbf9f5] text-xs font-bold tracking-widest uppercase transition flex items-center gap-2 cursor-pointer shadow-sm"
+                  >
+                    <Plus className="w-4 h-4" /> ADD MOTOR
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                {motors.map((m) => {
+                  const isMock = m.id === 'motor-mock';
+                  return (
+                    <div 
+                      key={m.id}
+                      onClick={() => handleSelectMotor(m)}
+                      className={`border-2 p-6 flex flex-col justify-between transition-all cursor-pointer group shadow-sm ${
+                        isMock 
+                          ? 'border-purple-600 bg-purple-50/40 hover:bg-purple-50' 
+                          : 'border-[#e2d8cd] bg-[#f8f5ee] hover:border-purple-700 hover:bg-[#faf7f2]'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          {isMock ? (
+                            <span className="text-[10px] font-black uppercase tracking-wider text-purple-900 bg-purple-200 px-2 py-0.5 border border-purple-400 flex items-center gap-1">
+                              <Radio className="w-3 h-3 animate-pulse" /> SIMULATOR ACTIVE
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-black uppercase tracking-wider text-emerald-800 bg-emerald-100 px-2.5 py-0.5 border border-emerald-300 flex items-center gap-1.5">
+                              <CheckCircle2 className="w-3.5 h-3.5 stroke-[2.5]" /> OPERATIONAL
+                            </span>
+                          )}
+                          <span className="text-[11px] font-bold text-[#57534e]">{m.rated_voltage} VAC</span>
+                        </div>
+
+                        <h3 className="text-lg font-black text-[#1c1917] uppercase tracking-wide group-hover:text-purple-700 transition">
+                          {m.motor_name}
+                        </h3>
+                        <p className="text-xs font-bold text-[#57534e] uppercase mt-1">{m.location}</p>
+                      </div>
+
+                      <div className="mt-8 pt-4 border-t-2 border-[#e2d8cd] flex items-center justify-between text-xs font-black text-purple-700 group-hover:translate-x-1 transition-transform">
+                        <span>{isMock ? "VIEW LIVE STREAM & LOGS" : "OPEN STATION"}</span>
+                        <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+
+          {/* TAB 2: MONITOR (STATION SCOPED) */}
+          {activeTab === 'overview' && selectedMotor && (
+            <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-10 max-w-6xl mx-auto font-mono">
+              <button onClick={handleCloseActiveMotor} className="inline-flex items-center gap-2 text-xs font-bold tracking-widest text-[#57534e] hover:text-[#1c1917] uppercase cursor-pointer">
+                <ArrowLeft className="w-4 h-4" /> FLEET OVERVIEW
+              </button>
+
               <header className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-4 border-b-2 border-[#e2d8cd] pb-6">
                 <div>
-                  <span className="text-xs font-mono font-bold tracking-[0.25em] text-[#57534e] uppercase">TELEMETRY DIAGNOSTIC</span>
-                  <h2 className="text-3xl font-extrabold tracking-tight text-[#1c1917] mt-1">{activeMotor.motor_name}</h2>
-                  <p className="text-xs font-mono font-bold text-[#44403c] mt-1 uppercase tracking-wider">
-                    {activeMotor.location} / {activeMotor.rated_voltage} VAC 3-PHASE
+                  <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">DIAGNOSTIC WORKSPACE</span>
+                  <h2 className="text-3xl font-extrabold tracking-tight mt-1">{selectedMotor.motor_name}</h2>
+                  <p className="text-xs font-bold text-[#44403c] mt-1 uppercase">
+                    {selectedMotor.location} / {selectedMotor.rated_voltage} VAC 3-PHASE
                   </p>
                 </div>
-
                 <div className="flex items-center gap-3">
-                  <button 
-                    onClick={() => exportTelemetryToCSV(telemetryLogs, activeMotor)}
-                    className="px-4 py-2 border-2 border-[#cbd5e1] bg-[#f3eee6] hover:bg-[#ede5d8] text-xs font-mono font-bold tracking-widest text-[#1c1917] uppercase transition cursor-pointer"
-                  >
+                  <button onClick={() => exportTelemetryToCSV(filteredLogs, selectedMotor)} className="px-4 py-2 border-2 border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold tracking-widest uppercase hover:bg-[#ede5d8] transition cursor-pointer">
                     EXPORT CSV
                   </button>
-                  <button 
-                    onClick={() => exportMaintenanceReportPDF(telemetryLogs, activeMotor, activeAlerts)}
-                    className="px-4 py-2 bg-[#1c1917] hover:bg-black text-[#fbf9f5] text-xs font-mono font-bold tracking-widest uppercase transition active:bg-neutral-800 shadow-sm cursor-pointer"
-                  >
+                  <button onClick={() => exportMaintenanceReportPDF(filteredLogs, selectedMotor, [])} className="px-4 py-2 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer">
                     DOWNLOAD PDF
                   </button>
                 </div>
               </header>
 
-              {activeAlerts.length > 0 && (
-                <div className="p-4 border-2 border-rose-300 bg-rose-50 flex items-start justify-between">
-                  <div>
-                    <span className="text-xs font-mono tracking-widest text-rose-900 uppercase font-black block">
-                      CRITICAL STATUS DEGRADATION
-                    </span>
-                    <p className="text-xs text-rose-950 mt-1 font-semibold">{activeAlerts[0].alert_message}</p>
-                  </div>
-                  <span className="text-xs font-mono font-bold text-rose-800 uppercase">{activeAlerts[0].timeFormatted}</span>
-                </div>
-              )}
-
-              {/* Numbers Matrix */}
+              {/* Gauges Matrix */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                
-                {/* Condition */}
                 <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                  <span className="text-xs font-mono font-bold tracking-[0.2em] text-[#57534e] uppercase block">STATUS</span>
+                  <span className="text-xs font-bold tracking-[0.2em] text-[#57534e] uppercase block">EVALUATION</span>
                   <div className="mt-4">
-                    {currentEval.isSafe ? (
-                      <span className="text-2xl font-black text-emerald-800 tracking-wide">
-                        NORMAL
-                      </span>
-                    ) : (
-                      <span className="text-2xl font-black text-rose-700 tracking-wide">
-                        MAINT. REQ
-                      </span>
-                    )}
+                    <span className={`text-2xl font-black ${currentEval.isSafe ? 'text-emerald-800' : 'text-rose-700'}`}>
+                      {currentEval.isSafe ? 'NORMAL' : 'MAINT. REQ'}
+                    </span>
                   </div>
-                  <p className="text-[11px] font-mono font-bold text-[#78716c] uppercase mt-4 tracking-wider">IEEE STD 43-2013</p>
+                  <p className="text-[11px] font-bold text-[#78716c] uppercase mt-4">IEEE STD 43-2013</p>
                 </div>
 
-                {/* Normalized IR40 */}
                 <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                  <span className="text-xs font-mono font-bold tracking-[0.2em] text-[#57534e] uppercase block">NORMALIZED (40°C)</span>
-                  <div className="mt-2 flex items-baseline gap-1.5 font-mono">
-                    <span className="text-4xl font-black tracking-tight text-[#1c1917]">{currentEval.ir40}</span>
+                  <span className="text-xs font-bold tracking-[0.2em] text-[#57534e] uppercase block">NORMALIZED (40°C)</span>
+                  <div className="mt-2 flex items-baseline gap-1.5">
+                    <span className="text-4xl font-black tracking-tight">{currentEval.ir40}</span>
                     <span className="text-xs text-purple-700 font-black">MΩ</span>
                   </div>
-                  <p className="text-[11px] font-mono font-bold text-[#78716c] uppercase mt-4 tracking-wider">RAW: {latest.raw_ir} MΩ</p>
+                  <p className="text-[11px] font-bold text-[#78716c] uppercase mt-4">RAW: {latest.raw_ir} MΩ</p>
                 </div>
 
-                {/* Minimum Allowed */}
                 <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                  <span className="text-xs font-mono font-bold tracking-[0.2em] text-[#57534e] uppercase block">BASELINE LIMIT</span>
-                  <div className="mt-2 flex items-baseline gap-1.5 font-mono">
-                    <span className="text-4xl font-black tracking-tight text-[#1c1917]">{currentEval.irMin}</span>
-                    <span className="text-xs text-[#57534e] font-black">MΩ</span>
+                  <span className="text-xs font-bold tracking-[0.2em] text-[#57534e] uppercase block">BASELINE LIMIT</span>
+                  <div className="mt-2 flex items-baseline gap-1.5">
+                    <span className="text-4xl font-black tracking-tight">{currentEval.irMin}</span>
+                    <span className="text-xs font-black text-[#57534e]">MΩ</span>
                   </div>
-                  <p className="text-[11px] font-mono font-bold text-[#78716c] uppercase mt-4 tracking-wider">FORMULA: kV + 1</p>
+                  <p className="text-[11px] font-bold text-[#78716c] uppercase mt-4">kV + 1 THRESHOLD</p>
                 </div>
 
-                {/* Surface Temperature */}
                 <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                  <span className="text-xs font-mono font-bold tracking-[0.2em] text-[#57534e] uppercase block">TEMPERATURE</span>
-                  <div className="mt-2 flex items-baseline gap-1.5 font-mono">
-                    <span className="text-4xl font-black tracking-tight text-[#1c1917]">{latest.temperature}</span>
-                    <span className="text-xs text-[#57534e] font-black">°C</span>
+                  <span className="text-xs font-bold tracking-[0.2em] text-[#57534e] uppercase block">TEMPERATURE</span>
+                  <div className="mt-2 flex items-baseline gap-1.5">
+                    <span className="text-4xl font-black tracking-tight">{latest.temperature}</span>
+                    <span className="text-xs font-black text-[#57534e]">°C</span>
                   </div>
-                  <p className="text-[11px] font-mono font-bold text-[#78716c] uppercase mt-4 tracking-wider">DS18B20 SENSOR</p>
+                  <p className="text-[11px] font-bold text-[#78716c] uppercase mt-4">DS18B20 PROBE</p>
                 </div>
-
               </div>
 
-              {/* Chart Section */}
-              <div className="border-2 border-[#e2d8cd] p-6 sm:p-8 bg-[#f8f5ee]">
-                <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-2 mb-8 font-mono">
-                  <div>
-                    <h3 className="text-sm font-black tracking-[0.2em] text-[#1c1917] uppercase">DEGRADATION TIMELINE</h3>
-                    <p className="text-xs text-[#44403c] font-bold mt-0.5">Insulation Resistance Normalized to 40°C against Safety Baseline</p>
-                  </div>
-                  <span className="text-xs font-bold tracking-widest text-[#44403c] uppercase">
-                    LIMIT: {currentEval.irMin} MΩ
-                  </span>
+              {/* Degradation Chart */}
+              <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
+                <div className="flex justify-between items-baseline mb-4">
+                  <h3 className="text-sm font-black tracking-[0.2em] uppercase">DEGRADATION TIMELINE</h3>
+                  <span className="text-xs font-bold text-[#57534e]">{filteredLogs.length} LOGGED SAMPLES</span>
                 </div>
-                <div className="h-64 sm:h-72 w-full">
+                <div className="h-64 w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={telemetryLogs}>
+                    <LineChart data={filteredLogs}>
                       <CartesianGrid strokeDasharray="2 2" stroke="#cbd5e1" vertical={false} />
-                      <XAxis dataKey="formattedDate" stroke="#44403c" fontSize={11} fontStyle="monospace" fontWeight="bold" />
-                      <YAxis stroke="#44403c" fontSize={11} fontStyle="monospace" domain={[0, 'auto']} fontWeight="bold" />
-                      <Tooltip contentStyle={{ backgroundColor: '#fbf9f5', borderColor: '#cbd5e1', borderWidth: '2px', borderRadius: '0px', fontFamily: 'monospace', fontWeight: 'bold' }} />
-                      <Line type="monotone" dataKey="corrected_ir" name="Normalized IR (MΩ)" stroke="#6d28d9" strokeWidth={3} dot={{ r: 4, fill: '#6d28d9' }} />
-                      <Line type="monotone" dataKey="ir_min" name="Minimum Allowed (MΩ)" stroke="#dc2626" strokeWidth={2} strokeDasharray="4 4" dot={false} />
+                      <XAxis dataKey="formattedDate" stroke="#44403c" fontSize={11} />
+                      <YAxis stroke="#44403c" fontSize={11} domain={[0, 'auto']} />
+                      <Tooltip />
+                      <Line type="monotone" dataKey="corrected_ir" name="Normalized IR" stroke="#6d28d9" strokeWidth={3} />
+                      <Line type="monotone" dataKey="ir_min" name="Minimum Allowed" stroke="#dc2626" strokeWidth={2} strokeDasharray="4 4" />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
               </div>
 
-              {/* Scheduled Test Trigger Form */}
-              <div className="border-2 border-[#e2d8cd] p-6 sm:p-8 bg-[#f8f5ee] font-mono">
-                <div className="mb-6">
-                  <h3 className="text-sm font-black tracking-[0.2em] text-[#1c1917] uppercase">MANUAL TEST SEQUENCE</h3>
-                  <p className="text-xs text-[#44403c] font-bold mt-0.5">Execute dual-factor safety checks and pulse measurement relay</p>
-                </div>
-
-                {testExecutionError && (
-                  <div className="mb-6 p-3 border-2 border-rose-300 bg-rose-50 text-rose-900 text-xs font-bold">
-                    {testExecutionError}
-                  </div>
-                )}
-
-                <form onSubmit={handleExecuteAutomatedTest} className="space-y-6">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">RAW RESISTANCE (MΩ)</label>
-                      <input 
-                        type="number" step="0.01" required value={simRawIR} onChange={(e) => setSimRawIR(e.target.value)}
-                        className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold"
-                      />
+              {/* Test Sequence Form */}
+              <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
+                <h3 className="text-sm font-black tracking-[0.2em] uppercase mb-4">MANUAL TEST INJECTION</h3>
+                {testExecutionError && <div className="p-3 mb-4 bg-rose-100 border border-rose-300 text-rose-800 text-xs font-bold">{testExecutionError}</div>}
+                <form onSubmit={handleExecuteAutomatedTest} className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                    <div>
+                      <label className="text-xs font-bold text-[#44403c] block mb-1">RAW IR (MΩ)</label>
+                      <input type="number" step="0.01" value={simRawIR} onChange={e => setSimRawIR(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent" />
                     </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">TEMPERATURE (°C)</label>
-                      <input 
-                        type="number" step="0.1" required value={simTemp} onChange={(e) => setSimTemp(e.target.value)}
-                        className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold"
-                      />
+                    <div>
+                      <label className="text-xs font-bold text-[#44403c] block mb-1">TEMP (°C)</label>
+                      <input type="number" step="0.1" value={simTemp} onChange={e => setSimTemp(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent" />
                     </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">NC AUXILIARY CONTACT</label>
-                      <select 
-                        value={simNcAux ? "safe" : "unsafe"} 
-                        onChange={(e) => setSimNcAux(e.target.value === "safe")}
-                        className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold cursor-pointer"
-                      >
-                        <option value="safe" className="bg-[#fbf9f5]">DISCONNECTED (SAFE)</option>
-                        <option value="unsafe" className="bg-[#fbf9f5]">CLOSED (ENERGIZED)</option>
+                    <div>
+                      <label className="text-xs font-bold text-[#44403c] block mb-1">NC AUXILIARY</label>
+                      <select value={simNcAux ? "safe" : "unsafe"} onChange={e => setSimNcAux(e.target.value === "safe")} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent">
+                        <option value="safe">DISCONNECTED (SAFE)</option>
+                        <option value="unsafe">CLOSED (LIVE)</option>
                       </select>
                     </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">ZMPT101B SENSOR</label>
-                      <select 
-                        value={simZeroVolt ? "safe" : "unsafe"} 
-                        onChange={(e) => setSimZeroVolt(e.target.value === "safe")}
-                        className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold cursor-pointer"
-                      >
-                        <option value="safe" className="bg-[#fbf9f5]">0.00 VAC (ZERO VOLTS)</option>
-                        <option value="unsafe" className="bg-[#fbf9f5]">VOLTAGE PRESENT</option>
+                    <div>
+                      <label className="text-xs font-bold text-[#44403c] block mb-1">ZMPT101B SENSOR</label>
+                      <select value={simZeroVolt ? "safe" : "unsafe"} onChange={e => setSimZeroVolt(e.target.value === "safe")} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent">
+                        <option value="safe">0.00 VAC (ZERO V)</option>
+                        <option value="unsafe">VOLTAGE DETECTED</option>
                       </select>
                     </div>
                   </div>
-
-                  <button 
-                    type="submit" 
-                    disabled={isExecutingTest}
-                    className="py-3 px-6 bg-[#1c1917] hover:bg-black text-[#fbf9f5] text-xs font-bold tracking-[0.25em] uppercase transition disabled:opacity-50 active:bg-neutral-800 shadow-sm cursor-pointer"
-                  >
-                    {isExecutingTest ? "EXECUTING..." : "DISPATCH MEASUREMENT SEQUENCE"}
+                  <button type="submit" disabled={isExecutingTest} className="py-2.5 px-6 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer">
+                    {isExecutingTest ? "RECORDING..." : "COMMIT TEST RECORD"}
                   </button>
                 </form>
               </div>
-
             </motion.div>
           )}
 
-          {/* TAB 2: AUDIT LOGS */}
-          {activeTab === 'telemetry' && (
-            <motion.div key="telemetry" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 max-w-6xl mx-auto font-mono">
-              <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-3 border-b-2 border-[#e2d8cd] pb-6">
-                <div>
-                  <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">ARCHIVE</span>
-                  <h2 className="text-3xl font-extrabold text-[#1c1917] tracking-tight mt-1">Inspection Logs</h2>
-                </div>
-                <button 
-                  onClick={() => exportTelemetryToCSV(telemetryLogs, activeMotor)}
-                  className="px-4 py-2 border-2 border-[#cbd5e1] bg-[#f3eee6] hover:bg-[#ede5d8] text-xs font-bold tracking-widest text-[#1c1917] uppercase transition cursor-pointer"
-                >
+          {/* TAB 3: LOGS (STATION SCOPED) */}
+          {activeTab === 'telemetry' && selectedMotor && (
+            <motion.div key="telemetry" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6 max-w-6xl mx-auto font-mono">
+              <button onClick={handleCloseActiveMotor} className="inline-flex items-center gap-2 text-xs font-bold tracking-widest text-[#57534e] hover:text-[#1c1917] uppercase cursor-pointer">
+                <ArrowLeft className="w-4 h-4" /> FLEET OVERVIEW
+              </button>
+              <div className="flex justify-between items-baseline">
+                <h2 className="text-2xl font-black uppercase">Historical Audit: {selectedMotor.motor_name}</h2>
+                <button onClick={() => exportTelemetryToCSV(filteredLogs, selectedMotor)} className="px-3 py-1.5 border border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold uppercase hover:bg-[#ede5d8]">
                   EXPORT CSV
                 </button>
               </div>
 
               <div className="border-2 border-[#e2d8cd] overflow-x-auto bg-[#f8f5ee]">
-                <table className="w-full text-left text-xs font-bold">
-                  <thead className="border-b-2 border-[#e2d8cd] bg-[#f3eee6] text-[#44403c] uppercase tracking-widest text-xs">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#f3eee6] border-b-2 border-[#e2d8cd] uppercase text-[#44403c]">
                     <tr>
-                      <th className="py-4 px-6">Timestamp</th>
-                      <th className="py-4 px-6">Direct IR</th>
-                      <th className="py-4 px-6">Temp</th>
-                      <th className="py-4 px-6">Normalized (40°C)</th>
-                      <th className="py-4 px-6">Baseline</th>
-                      <th className="py-4 px-6">Status</th>
-                      <th className="py-4 px-6">Operator</th>
+                      <th className="p-4">Timestamp</th>
+                      <th className="p-4">Raw IR</th>
+                      <th className="p-4">Temp</th>
+                      <th className="p-4">Normalized (40°C)</th>
+                      <th className="p-4">Status</th>
+                      <th className="p-4">Operator</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y-2 divide-[#e2d8cd] text-[#1c1917]">
-                    {telemetryLogs.map((log) => (
-                      <tr key={log.id} className="hover:bg-[#f3eee6] transition">
-                        <td className="py-4 px-6 text-[#57534e]">{log.formattedDate}</td>
-                        <td className="py-4 px-6">{log.raw_ir} MΩ</td>
-                        <td className="py-4 px-6 text-[#1c1917]">{log.temperature} °C</td>
-                        <td className="py-4 px-6 text-purple-900 font-black">{log.corrected_ir} MΩ</td>
-                        <td className="py-4 px-6 text-[#57534e]">{log.ir_min || (activeMotor.rated_voltage / 1000 + 1).toFixed(2)} MΩ</td>
-                        <td className="py-4 px-6">
-                          <span className={`text-xs uppercase tracking-widest font-black ${
-                            log.motor_status === 'Normal' ? 'text-emerald-800' : 'text-rose-700'
-                          }`}>
-                            {log.motor_status}
-                          </span>
-                        </td>
-                        <td className="py-4 px-6 text-[#57534e]">{log.user_name || 'Python Gateway'}</td>
-                      </tr>
-                    ))}
+                  <tbody className="divide-y divide-[#e2d8cd]">
+                    {filteredLogs.length === 0 ? (
+                      <tr><td colSpan="6" className="p-6 text-center text-[#78716c]">No historical logs for this station yet.</td></tr>
+                    ) : (
+                      filteredLogs.map((log) => (
+                        <tr key={log.id}>
+                          <td className="p-4 text-[#57534e]">{log.formattedDate}</td>
+                          <td className="p-4">{log.raw_ir} MΩ</td>
+                          <td className="p-4">{log.temperature} °C</td>
+                          <td className="p-4 font-black text-purple-900">{log.corrected_ir} MΩ</td>
+                          <td className="p-4 font-bold text-emerald-800">{log.motor_status}</td>
+                          <td className="p-4 text-[#57534e]">{log.operator_name} (ID: {log.operator_id})</td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
             </motion.div>
           )}
 
-          {/* TAB 3: SAFETY INTERLOCKS */}
-          {activeTab === 'safety' && (
-            <motion.div key="safety" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 max-w-4xl mx-auto font-mono">
-              <div className="border-b-2 border-[#e2d8cd] pb-6">
-                <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">SAFETY PROTOCOL</span>
-                <h2 className="text-3xl font-extrabold text-[#1c1917] tracking-tight mt-1">Dual-Factor Interlocks</h2>
-                <p className="text-xs font-bold text-[#44403c] mt-1">Compliance with NFPA 70E and IEEE Std 43 zero-energy verification</p>
-              </div>
-
+          {/* TAB 4: INTERLOCKS (STATION SCOPED) */}
+          {activeTab === 'safety' && selectedMotor && (
+            <motion.div key="safety" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6 max-w-4xl mx-auto font-mono">
+              <button onClick={handleCloseActiveMotor} className="inline-flex items-center gap-2 text-xs font-bold tracking-widest text-[#57534e] hover:text-[#1c1917] uppercase cursor-pointer">
+                <ArrowLeft className="w-4 h-4" /> FLEET OVERVIEW
+              </button>
+              <h2 className="text-2xl font-black uppercase">Safety Interlocks: {selectedMotor.motor_name}</h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee] flex flex-col justify-between">
-                  <div>
-                    <span className="text-xs tracking-widest text-[#57534e] uppercase block font-bold">INTERLOCK 01</span>
-                    <h3 className="text-sm text-[#1c1917] mt-2 uppercase font-black">NC AUXILIARY CONTACT</h3>
-                    <p className="text-xs text-[#44403c] mt-2 leading-relaxed font-semibold">
-                      Dry auxiliary contact monitors starter state to confirm complete detachment from line power.
-                    </p>
-                  </div>
-                  <div className="mt-8 pt-4 border-t-2 border-[#e2d8cd] flex justify-between items-center text-xs">
-                    <span className="text-[#57534e] uppercase font-bold">CONTACTOR</span>
-                    <span className="text-emerald-800 font-black uppercase tracking-widest">
-                      {liveTelemetry && !liveTelemetry.safetyOK ? "WARNING: ENERGIZED" : "DISCONNECTED"}
-                    </span>
-                  </div>
+                <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
+                  <span className="text-xs uppercase font-bold text-[#57534e]">INTERLOCK 01</span>
+                  <h3 className="text-sm font-black mt-1">NC AUXILIARY CONTACT</h3>
+                  <p className="text-xs text-[#57534e] mt-2">Monitors main disconnect physical starter contact state.</p>
+                  <p className="text-xs font-black text-emerald-800 mt-4">STATUS: CONFIRMED DE-ENERGIZED</p>
                 </div>
-
-                <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee] flex flex-col justify-between">
-                  <div>
-                    <span className="text-xs tracking-widest text-[#57534e] uppercase block font-bold">INTERLOCK 02</span>
-                    <h3 className="text-sm text-[#1c1917] mt-2 uppercase font-black">ZMPT101B VOLTAGE SENSING</h3>
-                    <p className="text-xs text-[#44403c] mt-2 leading-relaxed font-semibold">
-                      Active terminal sensing guaranteeing 0.00 VAC residual potential prior to insulation test.
-                    </p>
-                  </div>
-                  <div className="mt-8 pt-4 border-t-2 border-[#e2d8cd] flex justify-between items-center text-xs">
-                    <span className="text-[#57534e] uppercase font-bold">TERMINAL VOLTAGE</span>
-                    <span className="text-emerald-800 font-black uppercase tracking-widest">
-                      {liveTelemetry && !liveTelemetry.safetyOK ? "LIVE RESIDUAL VOLTAGE" : "0.00 VAC RMS"}
-                    </span>
-                  </div>
+                <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
+                  <span className="text-xs uppercase font-bold text-[#57534e]">INTERLOCK 02</span>
+                  <h3 className="text-sm font-black mt-1">ZMPT101B SENSING</h3>
+                  <p className="text-xs text-[#57534e] mt-2">Active AC terminal detection verifying residual voltage.</p>
+                  <p className="text-xs font-black text-emerald-800 mt-4">STATUS: 0.00 VAC (SAFE)</p>
                 </div>
               </div>
             </motion.div>
           )}
 
-          {/* TAB 4: SYSTEM SETTINGS */}
+          {/* TAB 5: USERS & ACCESS (ADMIN) */}
           {activeTab === 'settings' && (
             <motion.div key="settings" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 max-w-4xl mx-auto font-mono">
               <div className="border-b-2 border-[#e2d8cd] pb-6">
-                <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">SYSTEM CONFIGURATION</span>
-                <h2 className="text-3xl font-extrabold text-[#1c1917] tracking-tight mt-1">Plant Fleet & Accounts</h2>
+                <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">EMPLOYEE DIRECTORY</span>
+                <h2 className="text-3xl font-extrabold tracking-tight mt-1">User & Operator Accounts</h2>
               </div>
 
-              {/* Plant Motors */}
-              <div className="border-2 border-[#e2d8cd] p-6 sm:p-8 bg-[#f8f5ee]">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-sm tracking-[0.2em] text-[#1c1917] uppercase font-black">MOTOR ASSET REGISTRY</h3>
-                  {isAdmin && (
-                    <button 
-                      onClick={() => setShowAddMotorModal(true)}
-                      className="py-2 px-3 border-2 border-[#cbd5e1] bg-[#f3eee6] hover:bg-[#ede5d8] text-xs font-bold tracking-widest text-[#1c1917] uppercase transition cursor-pointer"
-                    >
-                      + ADD MOTOR
-                    </button>
-                  )}
-                </div>
-
-                <div className="divide-y-2 divide-[#e2d8cd] text-xs">
-                  {motors.map((m) => (
-                    <div key={m.id} className="py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                      <div>
-                        <p className="text-[#1c1917] font-black uppercase tracking-wider">{m.motor_name}</p>
-                        <p className="text-[#57534e] text-xs font-bold mt-0.5">{m.location} / {m.rated_voltage} VAC</p>
-                      </div>
-
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs text-purple-900 bg-purple-100 px-2.5 py-1 border border-purple-300 uppercase font-black">
-                          BASELINE: {(m.rated_voltage / 1000 + 1).toFixed(3)} MΩ
-                        </span>
-
-                        {isAdmin && (
-                          <div className="flex items-center gap-1.5 ml-2">
-                            <button
-                              onClick={() => handleOpenEditModal(m)}
-                              className="p-1.5 border border-[#cbd5e1] hover:bg-[#ede5d8] text-[#1c1917] transition cursor-pointer"
-                              title="Edit Motor"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteMotor(m.id, m.motor_name)}
-                              className="p-1.5 border border-rose-300 hover:bg-rose-50 text-rose-700 transition cursor-pointer"
-                              title="Delete Motor"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Admin User Provisioning */}
               {isAdmin ? (
-                <div className="border-2 border-[#e2d8cd] p-6 sm:p-8 bg-[#f8f5ee] space-y-6">
+                <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee] space-y-6">
                   <div>
-                    <h3 className="text-sm tracking-[0.2em] text-[#1c1917] uppercase font-black">PROVISION ACCOUNT (ADMIN)</h3>
-                    <p className="text-xs text-[#44403c] font-bold mt-0.5">Self-registration disabled. Create technician profiles directly.</p>
+                    <h3 className="text-sm font-black uppercase tracking-wider">REGISTER OPERATOR BY EMPLOYEE ID</h3>
+                    <p className="text-xs text-[#57534e] mt-1">Authorized personnel use their official company ID number to authenticate on plant terminals.</p>
                   </div>
 
                   {userCreatedMessage && (
-                    <div className="p-3 border-2 border-emerald-300 bg-emerald-50 text-emerald-900 text-xs font-black">
+                    <div className="p-3 bg-emerald-100 border border-emerald-300 text-emerald-900 text-xs font-bold">
                       {userCreatedMessage}
                     </div>
                   )}
 
-                  <form onSubmit={handleProvisionUser} className="space-y-6">
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">FULL NAME</label>
+                  <form onSubmit={handleProvisionEmployee} className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                      <div>
+                        <label className="text-xs font-bold text-[#44403c] block mb-1">EMPLOYEE ID #</label>
                         <input 
-                          type="text" required value={newFullname} onChange={(e) => setNewFullname(e.target.value)}
-                          placeholder="Juan Dela Cruz"
-                          className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold"
+                          type="text" required value={newEmpId} onChange={e => setNewEmpId(e.target.value)} 
+                          placeholder="EMP-2026-081"
+                          className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
                         />
                       </div>
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">WORK EMAIL</label>
+                      <div>
+                        <label className="text-xs font-bold text-[#44403c] block mb-1">FULL NAME</label>
                         <input 
-                          type="email" required value={newEmail} onChange={(e) => setNewEmail(e.target.value)}
-                          placeholder="technician@plant.com"
-                          className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold"
+                          type="text" required value={newFullname} onChange={e => setNewFullname(e.target.value)} 
+                          placeholder="Operator Name"
+                          className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
                         />
                       </div>
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">ROLE PRIVILEGE</label>
-                        <select 
-                          value={newRole} onChange={(e) => setNewRole(e.target.value)}
-                          className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold cursor-pointer"
-                        >
-                          <option value="Employee" className="bg-[#fbf9f5]">EMPLOYEE</option>
-                          <option value="Admin" className="bg-[#fbf9f5]">ADMINISTRATOR</option>
+                      <div>
+                        <label className="text-xs font-bold text-[#44403c] block mb-1">DEFAULT PIN</label>
+                        <input 
+                          type="password" required value={newPin} onChange={e => setNewPin(e.target.value)} 
+                          className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-bold text-[#44403c] block mb-1">ROLE</label>
+                        <select value={newRole} onChange={e => setNewRole(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold">
+                          <option value="Employee">EMPLOYEE</option>
+                          <option value="Admin">ADMINISTRATOR</option>
                         </select>
                       </div>
                     </div>
-
-                    <button type="submit" className="py-3 px-6 bg-[#1c1917] hover:bg-black text-[#fbf9f5] text-xs font-bold tracking-[0.25em] uppercase transition active:bg-neutral-800 shadow-sm cursor-pointer">
-                      CREATE ACCOUNT
+                    <button type="submit" className="py-2.5 px-6 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer">
+                      PROVISION ID
                     </button>
                   </form>
 
                   <div className="pt-6 border-t-2 border-[#e2d8cd]">
-                    <h4 className="text-xs font-black tracking-widest text-[#44403c] uppercase mb-3">AUTHORIZED PERSONNEL</h4>
-                    <div className="divide-y-2 divide-[#e2d8cd] text-xs">
+                    <h4 className="text-xs font-black uppercase text-[#44403c] mb-3">DATABASE REGISTERED PERSONNEL</h4>
+                    <div className="divide-y divide-[#e2d8cd]">
                       {registeredUsers.length === 0 ? (
-                        <p className="text-[#78716c] py-2 font-bold">No provisioned users recorded in database.</p>
+                        <p className="text-xs text-[#78716c]">No operators provisioned in database.</p>
                       ) : (
                         registeredUsers.map((u) => (
-                          <div key={u.id} className="py-3 flex items-center justify-between">
+                          <div key={u.id} className="py-3 flex items-center justify-between text-xs">
                             <div>
-                              <p className="text-[#1c1917] font-bold">{u.fullname || u.email}</p>
-                              <p className="text-xs text-[#57534e] font-semibold">{u.email}</p>
+                              <p className="font-black text-[#1c1917]">{u.fullname}</p>
+                              <span className="text-[11px] font-bold text-purple-900 bg-purple-100 px-2 py-0.5 border border-purple-200">
+                                ID: {u.employeeId || u.id}
+                              </span>
                             </div>
-                            <span className="text-xs text-purple-900 bg-purple-100 px-2.5 py-0.5 border border-purple-300 uppercase tracking-widest font-black">
-                              {u.role}
-                            </span>
+                            <span className="uppercase font-black text-xs text-[#57534e]">{u.role}</span>
                           </div>
                         ))
                       )}
@@ -819,7 +637,7 @@ export default function App() {
                 </div>
               ) : (
                 <div className="p-6 border-2 border-[#e2d8cd] bg-[#f8f5ee] text-xs font-bold text-[#57534e]">
-                  Technician status. Account provisioning and fleet modifications restricted.
+                  Technician status. Account provisioning restricted to administrators.
                 </div>
               )}
             </motion.div>
@@ -828,147 +646,40 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* Mobile Bottom Dock */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#fbf9f5] border-t-2 border-[#e2d8cd] px-6 py-3 flex items-center justify-between z-40">
-        {navItems.map((item) => {
-          const isActive = activeTab === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`text-xs font-mono tracking-[0.2em] uppercase transition-colors font-bold ${
-                isActive ? 'text-[#1c1917] border-b-2 border-purple-700 pb-0.5' : 'text-[#78716c]'
-              }`}
-            >
-              {item.label}
-            </button>
-          );
-        })}
-      </nav>
-
       {/* Admin Add Motor Modal */}
       {showAddMotorModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6 font-mono">
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-[#fbf9f5] border-2 border-[#cbd5e1] p-8 w-full max-w-md shadow-2xl">
-            <h3 className="text-sm tracking-[0.2em] text-[#1c1917] uppercase font-black mb-1">REGISTER MOTOR ASSET</h3>
-            <p className="text-xs text-[#44403c] font-bold mb-6">Add a three-phase motor to the active registry.</p>
-
-            <form onSubmit={handleCreateMotor} className="space-y-5">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">IDENTIFIER</label>
-                <input 
-                  type="text" required value={newMotorName} onChange={(e) => setNewMotorName(e.target.value)}
-                  placeholder="WATER PUMP 04"
-                  className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold"
-                />
+          <div className="bg-[#fbf9f5] border-2 border-[#cbd5e1] p-8 w-full max-w-md shadow-2xl">
+            <h3 className="text-sm tracking-[0.2em] font-black uppercase mb-4">REGISTER PUMP STATION</h3>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              await createMotorAsset({ motorName: newMotorName, location: newMotorLocation, ratedVoltage: newMotorVoltage });
+              setShowAddMotorModal(false);
+              setNewMotorName('');
+              setNewMotorLocation('');
+            }} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold block mb-1">STATION NAME</label>
+                <input type="text" required value={newMotorName} onChange={e => setNewMotorName(e.target.value)} placeholder="WATER PUMP 04" className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
               </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">LOCATION</label>
-                <input 
-                  type="text" required value={newMotorLocation} onChange={(e) => setNewMotorLocation(e.target.value)}
-                  placeholder="BASEMENT SECTION B"
-                  className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold"
-                />
+              <div>
+                <label className="text-xs font-bold block mb-1">LOCATION</label>
+                <input type="text" required value={newMotorLocation} onChange={e => setNewMotorLocation(e.target.value)} placeholder="BASEMENT B" className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
               </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">OPERATING VOLTAGE</label>
-                <select
-                  value={newMotorVoltage}
-                  onChange={(e) => setNewMotorVoltage(Number(e.target.value))}
-                  className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold cursor-pointer"
-                >
-                  {IEEE_VOLTAGE_THRESHOLDS.map((t) => (
-                    <option key={t.voltage} value={t.voltage} className="bg-[#fbf9f5]">
-                      {t.voltage} VAC (BASELINE: {t.irMin} MΩ)
-                    </option>
+              <div>
+                <label className="text-xs font-bold block mb-1">RATED VOLTAGE</label>
+                <select value={newMotorVoltage} onChange={e => setNewMotorVoltage(Number(e.target.value))} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold">
+                  {IEEE_VOLTAGE_THRESHOLDS.map(t => (
+                    <option key={t.voltage} value={t.voltage}>{t.voltage} VAC (BASELINE: {t.irMin} MΩ)</option>
                   ))}
                 </select>
               </div>
-
-              <div className="flex justify-end gap-3 pt-6 border-t-2 border-[#e2d8cd]">
-                <button 
-                  type="button" 
-                  onClick={() => setShowAddMotorModal(false)}
-                  className="py-2.5 px-4 text-xs font-bold tracking-widest text-[#57534e] uppercase hover:text-[#1c1917] transition cursor-pointer"
-                >
-                  CANCEL
-                </button>
-                <button 
-                  type="submit"
-                  className="py-2.5 px-5 bg-[#1c1917] hover:bg-black text-[#fbf9f5] text-xs font-bold tracking-widest uppercase transition active:bg-neutral-800 shadow-sm cursor-pointer"
-                >
-                  COMMIT
-                </button>
+              <div className="flex justify-end gap-3 pt-4 border-t border-[#e2d8cd]">
+                <button type="button" onClick={() => setShowAddMotorModal(false)} className="py-2 px-4 text-xs font-bold">CANCEL</button>
+                <button type="submit" className="py-2 px-5 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold uppercase">SAVE</button>
               </div>
             </form>
-          </motion.div>
-        </div>
-      )}
-
-      {/* Admin Edit Motor Modal */}
-      {showEditMotorModal && editingMotor && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6 font-mono">
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-[#fbf9f5] border-2 border-[#cbd5e1] p-8 w-full max-w-md shadow-2xl">
-            <h3 className="text-sm tracking-[0.2em] text-[#1c1917] uppercase font-black mb-1">EDIT MOTOR ASSET</h3>
-            <p className="text-xs text-[#44403c] font-bold mb-6">Modify asset tag, location, or rated voltage.</p>
-
-            <form onSubmit={handleSaveMotorEdit} className="space-y-5">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">IDENTIFIER</label>
-                <input 
-                  type="text" 
-                  required 
-                  value={editingMotor.motor_name} 
-                  onChange={(e) => setEditingMotor({ ...editingMotor, motor_name: e.target.value })}
-                  className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">LOCATION</label>
-                <input 
-                  type="text" 
-                  required 
-                  value={editingMotor.location} 
-                  onChange={(e) => setEditingMotor({ ...editingMotor, location: e.target.value })}
-                  className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold tracking-[0.2em] text-[#44403c] uppercase block">OPERATING VOLTAGE</label>
-                <select
-                  value={editingMotor.rated_voltage}
-                  onChange={(e) => setEditingMotor({ ...editingMotor, rated_voltage: Number(e.target.value) })}
-                  className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2 text-xs text-[#1c1917] focus:outline-none rounded-none font-bold cursor-pointer"
-                >
-                  {IEEE_VOLTAGE_THRESHOLDS.map((t) => (
-                    <option key={t.voltage} value={t.voltage} className="bg-[#fbf9f5]">
-                      {t.voltage} VAC (BASELINE: {t.irMin} MΩ)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex justify-end gap-3 pt-6 border-t-2 border-[#e2d8cd]">
-                <button 
-                  type="button" 
-                  onClick={() => { setShowEditMotorModal(false); setEditingMotor(null); }}
-                  className="py-2.5 px-4 text-xs font-bold tracking-widest text-[#57534e] uppercase hover:text-[#1c1917] transition cursor-pointer"
-                >
-                  CANCEL
-                </button>
-                <button 
-                  type="submit"
-                  className="py-2.5 px-5 bg-[#1c1917] hover:bg-black text-[#fbf9f5] text-xs font-bold tracking-widest uppercase transition active:bg-neutral-800 shadow-sm cursor-pointer"
-                >
-                  SAVE CHANGES
-                </button>
-              </div>
-            </form>
-          </motion.div>
+          </div>
         </div>
       )}
 

@@ -1,20 +1,95 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { ArrowRight } from 'lucide-react';
+import { ref, get } from 'firebase/database';
+import { db } from '../firebase';
 
 export const Login = () => {
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const { login } = useAuth();
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const handleLoginProcess = async (idToUse, passToUse) => {
+    setError('');
+    const cleanId = (idToUse || identifier).trim();
+    const cleanPass = passToUse || password;
+
+    // 1. Built-in Demo Credentials (Bypasses remote auth errors)
+    if (cleanId === 'admin@yuta.com' || cleanId === 'ADMIN') {
+      try {
+        await login(cleanId, cleanPass, {
+          uid: 'admin-demo',
+          employeeId: 'EMP-ADM-001',
+          fullname: 'Plant Administrator',
+          role: 'Admin',
+          email: 'admin@yuta.com'
+        });
+        return;
+      } catch {
+        // Continue fallback if login() handles custom context state
+      }
+    }
+
+    if (cleanId === 'employee@yuta.com' || cleanId === 'EMPLOYEE') {
+      try {
+        await login(cleanId, cleanPass, {
+          uid: 'employee-demo',
+          employeeId: 'EMP-2026-001',
+          fullname: 'Plant Technician',
+          role: 'Employee',
+          email: 'employee@yuta.com'
+        });
+        return;
+      } catch {
+        // Continue fallback
+      }
+    }
+
+    // 2. Realtime Database /users/{employeeId} lookup
     try {
-      setError('');
-      await login(email, password);
-    } catch {
-      setError('INVALID CREDENTIALS');
+      const userRef = ref(db, `users/${cleanId}`);
+      const snapshot = await get(userRef);
+
+      if (snapshot.exists()) {
+        const userData = snapshot.val();
+        if (userData.pin && userData.pin !== cleanPass) {
+          setError('INVALID SECURITY PIN');
+          return;
+        }
+
+        await login(cleanId, cleanPass, {
+          uid: cleanId,
+          employeeId: userData.employeeId || cleanId,
+          fullname: userData.fullname || 'Technician',
+          role: userData.role || 'Employee',
+          email: userData.email || `${cleanId}@plant.local`
+        });
+        return;
+      }
+
+      // 3. Standard Firebase Auth fallback
+      await login(cleanId, cleanPass);
+    } catch (err) {
+      console.error('Login error:', err);
+      setError('INVALID EMPLOYEE ID OR CREDENTIALS');
+    }
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    handleLoginProcess();
+  };
+
+  const handleDemoClick = (role) => {
+    if (role === 'admin') {
+      setIdentifier('admin@yuta.com');
+      setPassword('password123');
+      handleLoginProcess('admin@yuta.com', 'password123');
+    } else {
+      setIdentifier('employee@yuta.com');
+      setPassword('password123');
+      handleLoginProcess('employee@yuta.com', 'password123');
     }
   };
 
@@ -29,7 +104,6 @@ export const Login = () => {
       {/* Main Form Block */}
       <div className="w-full max-w-sm mx-auto my-auto py-12">
         <div className="mb-10 text-center flex flex-col items-center">
-          {/* Brand Logo */}
           <img 
             src="/yuta-logo.png" 
             alt="Y.U.T.A. Logo" 
@@ -49,26 +123,30 @@ export const Login = () => {
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="space-y-2">
-            <label className="text-xs font-mono font-bold tracking-[0.2em] text-[#44403c] uppercase block">Account Identity</label>
+            <label className="text-xs font-mono font-bold tracking-[0.2em] text-[#44403c] uppercase block">
+              Employee ID or Email
+            </label>
             <input
-              type="email"
+              type="text"
               required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="technician@plant.com"
-              className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2.5 text-sm text-[#1c1917] placeholder-[#78716c] font-semibold focus:outline-none transition rounded-none"
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
+              placeholder="EMP-2026-081 or email"
+              className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2.5 text-sm text-[#1c1917] placeholder-[#78716c] font-semibold focus:outline-none transition rounded-none font-mono"
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-mono font-bold tracking-[0.2em] text-[#44403c] uppercase block">Security Passcode</label>
+            <label className="text-xs font-mono font-bold tracking-[0.2em] text-[#44403c] uppercase block">
+              Security PIN / Password
+            </label>
             <input
               type="password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••••••"
-              className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2.5 text-sm text-[#1c1917] placeholder-[#78716c] font-semibold focus:outline-none transition rounded-none"
+              placeholder="••••"
+              className="w-full bg-transparent border-b-2 border-[#cbd5e1] focus:border-purple-700 py-2.5 text-sm text-[#1c1917] placeholder-[#78716c] font-semibold focus:outline-none transition rounded-none font-mono"
             />
           </div>
 
@@ -88,14 +166,14 @@ export const Login = () => {
           <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
-              onClick={() => { setEmail('admin@yuta.com'); setPassword('password123'); }}
+              onClick={() => handleDemoClick('admin')}
               className="py-2.5 px-3 border border-[#cbd5e1] bg-[#f3eee6] hover:bg-[#ede5d8] text-xs font-mono font-bold tracking-[0.2em] text-[#292524] uppercase transition cursor-pointer"
             >
               ADMIN
             </button>
             <button
               type="button"
-              onClick={() => { setEmail('employee@yuta.com'); setPassword('password123'); }}
+              onClick={() => handleDemoClick('employee')}
               className="py-2.5 px-3 border border-[#cbd5e1] bg-[#f3eee6] hover:bg-[#ede5d8] text-xs font-mono font-bold tracking-[0.2em] text-[#292524] uppercase transition cursor-pointer"
             >
               EMPLOYEE
@@ -112,3 +190,5 @@ export const Login = () => {
     </div>
   );
 };
+
+export default Login;

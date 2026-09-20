@@ -1,25 +1,10 @@
 import { ref, onValue, get, set, push, update, remove, off } from "firebase/database";
 import { db } from "../firebase";
 
-// ==========================================
-// 1. PYTHON GATEWAY REALTIME LISTENERS
-// ==========================================
-
+// --- GATEWAY & LOGS ---
 export function subscribeToLiveTelemetry(callback) {
   const liveRef = ref(db, "live");
-  const listener = onValue(
-    liveRef,
-    (snapshot) => {
-      if (snapshot.exists()) {
-        callback(snapshot.val());
-      } else {
-        callback(null);
-      }
-    },
-    (error) => {
-      console.error("Firebase Live Telemetry Error:", error);
-    }
-  );
+  const listener = onValue(liveRef, (snapshot) => callback(snapshot.exists() ? snapshot.val() : null));
   return () => off(liveRef, "value", listener);
 }
 
@@ -28,31 +13,20 @@ export async function fetchTelemetryHistory() {
     const historyRef = ref(db, "history");
     const snapshot = await get(historyRef);
     if (!snapshot.exists()) return [];
-
-    const rawData = snapshot.val();
-    return Object.entries(rawData)
-      .map(([key, record]) => ({
-        id: key,
-        ...record,
-      }))
+    return Object.entries(snapshot.val())
+      .map(([key, record]) => ({ id: key, ...record }))
       .reverse();
-  } catch (error) {
-    console.error("Error fetching telemetry history:", error);
+  } catch {
     return [];
   }
 }
 
-// ==========================================
-// 2. FLEET ASSET & USER MANAGEMENT
-// ==========================================
-
+// --- FLEET ASSETS ---
 export function subscribeToMotors(callback) {
   const motorsRef = ref(db, "motors");
   const listener = onValue(motorsRef, (snapshot) => {
     if (snapshot.exists()) {
-      const data = snapshot.val();
-      const list = Object.entries(data).map(([id, val]) => ({ id, ...val }));
-      callback(list);
+      callback(Object.entries(snapshot.val()).map(([id, val]) => ({ id, ...val })));
     } else {
       callback([]);
     }
@@ -60,86 +34,60 @@ export function subscribeToMotors(callback) {
   return () => off(motorsRef, "value", listener);
 }
 
-export function subscribeToMotorTelemetry(motorId, callback) {
-  const telemetryRef = ref(db, `telemetry/${motorId}`);
-  const listener = onValue(telemetryRef, (snapshot) => {
-    if (snapshot.exists()) {
-      const data = snapshot.val();
-      const list = Object.entries(data).map(([id, val]) => ({ id, ...val }));
-      callback(list);
-    } else {
-      callback([]);
-    }
-  });
-  return () => off(telemetryRef, "value", listener);
-}
-
-export function subscribeToMotorAlerts(motorId, callback) {
-  const alertsRef = ref(db, `alerts/${motorId}`);
-  const listener = onValue(alertsRef, (snapshot) => {
-    if (snapshot.exists()) {
-      const data = snapshot.val();
-      const list = Object.entries(data).map(([id, val]) => ({ id, ...val }));
-      callback(list);
-    } else {
-      callback([]);
-    }
-  });
-  return () => off(alertsRef, "value", listener);
-}
-
-export async function logTestReading({ motorId, rawIR, temperature, ratedVoltage, userId, userName, ncAuxSafe, zeroVoltageSafe }) {
-  if (!ncAuxSafe || !zeroVoltageSafe) {
-    throw new Error("Safety interlocks failed: Zero-energy state not verified.");
-  }
-  const telemetryRef = ref(db, `telemetry/${motorId}`);
-  const newLogRef = push(telemetryRef);
-  const record = {
-    raw_ir: Number(rawIR),
-    temperature: Number(temperature),
-    rated_voltage: Number(ratedVoltage),
-    user_id: userId,
-    user_name: userName,
-    timestamp: new Date().toISOString()
-  };
-  await set(newLogRef, record);
-  return newLogRef.key;
-}
-
 export async function createMotorAsset({ motorName, location, ratedVoltage }) {
   const motorsRef = ref(db, "motors");
-  const newMotorRef = push(motorsRef);
-  await set(newMotorRef, {
-    motor_name: motorName,
-    location,
-    rated_voltage: Number(ratedVoltage)
-  });
-  return newMotorRef.key;
+  const newRef = push(motorsRef);
+  await set(newRef, { motor_name: motorName, location, rated_voltage: Number(ratedVoltage) });
+  return newRef.key;
 }
 
-export async function updateMotorAsset(motorId, { motorName, location, ratedVoltage }) {
-  const motorRef = ref(db, `motors/${motorId}`);
-  await update(motorRef, {
-    motor_name: motorName,
-    location,
-    rated_voltage: Number(ratedVoltage)
+export async function updateMotorAsset(motorId, data) {
+  await update(ref(db, `motors/${motorId}`), {
+    motor_name: data.motorName,
+    location: data.location,
+    rated_voltage: Number(data.ratedVoltage)
   });
 }
 
 export async function deleteMotorAsset(motorId) {
-  const motorRef = ref(db, `motors/${motorId}`);
-  await remove(motorRef);
+  await remove(ref(db, `motors/${motorId}`));
 }
 
-export async function provisionUserAccount(uid, { fullname, email, role }) {
-  const userRef = ref(db, `users/${uid}`);
-  await set(userRef, { fullname, email, role });
+export async function logTestReading({ motorId, rawIR, temperature, ratedVoltage, employeeId, operatorName, ncAuxSafe, zeroVoltageSafe }) {
+  if (!ncAuxSafe || !zeroVoltageSafe) {
+    throw new Error("Safety interlocks failed: Zero-energy state not confirmed.");
+  }
+  const histRef = push(ref(db, "history"));
+  const record = {
+    motorId,
+    rawIR: Number(rawIR),
+    temperatureC: Number(temperature),
+    motorVoltage: Number(ratedVoltage),
+    employeeId: employeeId || "N/A",
+    operatorName: operatorName || "Operator",
+    safetyOK: true,
+    status: "NORMAL",
+    timestamp: new Date().toISOString()
+  };
+  await set(histRef, record);
+}
+
+// --- EMPLOYEE ID-BASED USER MANAGEMENT ---
+export async function provisionUserWithId(employeeId, { fullname, role, pin }) {
+  const cleanId = String(employeeId).trim();
+  const userRef = ref(db, `users/${cleanId}`);
+  await set(userRef, {
+    employeeId: cleanId,
+    fullname,
+    role,
+    pin: pin || "1234",
+    createdAt: new Date().toISOString()
+  });
 }
 
 export async function fetchRegisteredUsers() {
   const usersRef = ref(db, "users");
   const snapshot = await get(usersRef);
   if (!snapshot.exists()) return [];
-  const data = snapshot.val();
-  return Object.entries(data).map(([id, val]) => ({ id, ...val }));
+  return Object.entries(snapshot.val()).map(([id, val]) => ({ id, ...val }));
 }
