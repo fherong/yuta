@@ -37,7 +37,7 @@ export default function App() {
   const { currentUser, logout, isAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState('fleet');
   
-  // Default Fleet
+  // Default Fleet (Includes the simulator rig mapped to mock_gateway.py)
   const defaultMotors = [
     { id: 'motor-mock', motor_name: 'MOCK GATEWAY TEST RIG', location: 'LAB BENCH (SIMULATOR)', rated_voltage: 380 },
     { id: 'motor-001', motor_name: 'WATER PUMP 01', location: 'PUMP ROOM BASEMENT', rated_voltage: 480 },
@@ -53,7 +53,7 @@ export default function App() {
   const [telemetryLogs, setTelemetryLogs] = useState([]);
   const [registeredUsers, setRegisteredUsers] = useState([]);
 
-  // Modals & User Forms
+  // Modals & Motor Registration
   const [showAddMotorModal, setShowAddMotorModal] = useState(false);
   const [newMotorName, setNewMotorName] = useState('');
   const [newMotorLocation, setNewMotorLocation] = useState('');
@@ -74,7 +74,7 @@ export default function App() {
   const [newRole, setNewRole] = useState('Employee');
   const [userCreatedMessage, setUserCreatedMessage] = useState('');
 
-  // Dynamic tabs mapping: Icon used for mobile dock, Text used on desktop
+  // Navigation Items: Settings/Users is strictly rendered if isAdmin is true
   const navItems = [
     { id: 'fleet', label: 'FLEET', icon: LayoutGrid, section: 'global' },
     ...(selectedMotor ? [
@@ -82,8 +82,17 @@ export default function App() {
       { id: 'telemetry', label: 'LOGS', icon: FileText, section: 'station' },
       { id: 'safety', label: 'INTERLOCKS', icon: ShieldCheck, section: 'station' },
     ] : []),
-    { id: 'settings', label: 'USERS & ACCESS', mobileLabel: 'ACCESS', icon: Users, section: 'global' },
+    ...(isAdmin ? [
+      { id: 'settings', label: 'USERS & ACCESS', mobileLabel: 'ACCESS', icon: Users, section: 'global' }
+    ] : []),
   ];
+
+  // Route protection: redirect regular employee away from settings if left open
+  useEffect(() => {
+    if (!isAdmin && activeTab === 'settings') {
+      setActiveTab('fleet');
+    }
+  }, [isAdmin, activeTab]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -222,7 +231,7 @@ export default function App() {
   return (
     <div className="flex flex-col md:flex-row min-h-screen bg-[#fbf9f5] text-[#1c1917] selection:bg-purple-700 selection:text-white">
       
-      {/* Tablet / Mobile Header Bar */}
+      {/* Tablet / Mobile Top Header */}
       <header className="md:hidden flex items-center justify-between px-5 py-3 border-b-2 border-[#e2d8cd] bg-[#fbf9f5]/90 backdrop-blur-md sticky top-0 z-40">
         <div className="flex items-center gap-2.5">
           <img src="/yuta-logo.png" alt="Y.U.T.A." className="w-6 h-6 object-contain" />
@@ -242,7 +251,7 @@ export default function App() {
           <button 
             onClick={logout} 
             className="p-1.5 text-[#57534e] hover:text-rose-700 transition" 
-            title="Disconnect"
+            title="Sign Out"
           >
             <LogOutIcon className="w-4 h-4 stroke-[2.5]" />
           </button>
@@ -271,7 +280,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Desktop Nav Items */}
+          {/* Desktop Nav Items (Clean Text UI) */}
           <nav className="space-y-1">
             {navItems.map((item) => {
               const isActive = activeTab === item.id;
@@ -319,7 +328,7 @@ export default function App() {
                 <div>
                   <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">FLEET MONITOR</span>
                   <h2 className="text-3xl font-extrabold text-[#1c1917] tracking-tight mt-1">Water Pump Stations</h2>
-                  <p className="text-xs text-[#44403c] font-bold mt-1">Tap a pump station to unlock live monitoring, sensor logs, and safety interlocks</p>
+                  <p className="text-xs text-[#44403c] font-bold mt-1">Select a pump station to unlock live monitoring, sensor logs, and safety interlocks</p>
                 </div>
                 {isAdmin && (
                   <button 
@@ -567,91 +576,85 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* TAB 5: USERS & ACCESS (ADMIN) */}
-          {activeTab === 'settings' && (
+          {/* TAB 5: USERS & ACCESS (ADMIN ONLY) */}
+          {activeTab === 'settings' && isAdmin && (
             <motion.div key="settings" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 max-w-4xl mx-auto font-mono">
               <div className="border-b-2 border-[#e2d8cd] pb-6">
                 <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">EMPLOYEE DIRECTORY</span>
                 <h2 className="text-3xl font-extrabold tracking-tight mt-1">User & Operator Accounts</h2>
               </div>
 
-              {isAdmin ? (
-                <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee] space-y-6">
-                  <div>
-                    <h3 className="text-sm font-black uppercase tracking-wider">REGISTER OPERATOR BY EMPLOYEE ID</h3>
-                    <p className="text-xs text-[#57534e] mt-1">Authorized personnel use their official company ID number to authenticate on plant terminals.</p>
+              <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee] space-y-6">
+                <div>
+                  <h3 className="text-sm font-black uppercase tracking-wider">REGISTER OPERATOR BY EMPLOYEE ID</h3>
+                  <p className="text-xs text-[#57534e] mt-1">Authorized personnel use their official company ID number to authenticate on plant terminals.</p>
+                </div>
+
+                {userCreatedMessage && (
+                  <div className="p-3 bg-emerald-100 border border-emerald-300 text-emerald-900 text-xs font-bold">
+                    {userCreatedMessage}
                   </div>
+                )}
 
-                  {userCreatedMessage && (
-                    <div className="p-3 bg-emerald-100 border border-emerald-300 text-emerald-900 text-xs font-bold">
-                      {userCreatedMessage}
+                <form onSubmit={handleProvisionEmployee} className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                    <div>
+                      <label className="text-xs font-bold text-[#44403c] block mb-1">EMPLOYEE ID #</label>
+                      <input 
+                        type="text" required value={newEmpId} onChange={e => setNewEmpId(e.target.value)} 
+                        placeholder="EMP-2026-081"
+                        className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
+                      />
                     </div>
-                  )}
-
-                  <form onSubmit={handleProvisionEmployee} className="space-y-4">
-                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                      <div>
-                        <label className="text-xs font-bold text-[#44403c] block mb-1">EMPLOYEE ID #</label>
-                        <input 
-                          type="text" required value={newEmpId} onChange={e => setNewEmpId(e.target.value)} 
-                          placeholder="EMP-2026-081"
-                          className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs font-bold text-[#44403c] block mb-1">FULL NAME</label>
-                        <input 
-                          type="text" required value={newFullname} onChange={e => setNewFullname(e.target.value)} 
-                          placeholder="Operator Name"
-                          className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs font-bold text-[#44403c] block mb-1">DEFAULT PIN</label>
-                        <input 
-                          type="password" required value={newPin} onChange={e => setNewPin(e.target.value)} 
-                          className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs font-bold text-[#44403c] block mb-1">ROLE</label>
-                        <select value={newRole} onChange={e => setNewRole(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold">
-                          <option value="Employee">EMPLOYEE</option>
-                          <option value="Admin">ADMINISTRATOR</option>
-                        </select>
-                      </div>
+                    <div>
+                      <label className="text-xs font-bold text-[#44403c] block mb-1">FULL NAME</label>
+                      <input 
+                        type="text" required value={newFullname} onChange={e => setNewFullname(e.target.value)} 
+                        placeholder="Operator Name"
+                        className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
+                      />
                     </div>
-                    <button type="submit" className="py-2.5 px-6 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer">
-                      PROVISION ID
-                    </button>
-                  </form>
+                    <div>
+                      <label className="text-xs font-bold text-[#44403c] block mb-1">DEFAULT PIN</label>
+                      <input 
+                        type="password" required value={newPin} onChange={e => setNewPin(e.target.value)} 
+                        className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-[#44403c] block mb-1">ROLE</label>
+                      <select value={newRole} onChange={e => setNewRole(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold">
+                        <option value="Employee">EMPLOYEE</option>
+                        <option value="Admin">ADMINISTRATOR</option>
+                      </select>
+                    </div>
+                  </div>
+                  <button type="submit" className="py-2.5 px-6 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer">
+                    PROVISION ID
+                  </button>
+                </form>
 
-                  <div className="pt-6 border-t-2 border-[#e2d8cd]">
-                    <h4 className="text-xs font-black uppercase text-[#44403c] mb-3">DATABASE REGISTERED PERSONNEL</h4>
-                    <div className="divide-y divide-[#e2d8cd]">
-                      {registeredUsers.length === 0 ? (
-                        <p className="text-xs text-[#78716c]">No operators provisioned in database.</p>
-                      ) : (
-                        registeredUsers.map((u) => (
-                          <div key={u.id} className="py-3 flex items-center justify-between text-xs">
-                            <div>
-                              <p className="font-black text-[#1c1917]">{u.fullname}</p>
-                              <span className="text-[11px] font-bold text-purple-900 bg-purple-100 px-2 py-0.5 border border-purple-200">
-                                ID: {u.employeeId || u.id}
-                              </span>
-                            </div>
-                            <span className="uppercase font-black text-xs text-[#57534e]">{u.role}</span>
+                <div className="pt-6 border-t-2 border-[#e2d8cd]">
+                  <h4 className="text-xs font-black uppercase text-[#44403c] mb-3">DATABASE REGISTERED PERSONNEL</h4>
+                  <div className="divide-y divide-[#e2d8cd]">
+                    {registeredUsers.length === 0 ? (
+                      <p className="text-xs text-[#78716c]">No operators provisioned in database.</p>
+                    ) : (
+                      registeredUsers.map((u) => (
+                        <div key={u.id} className="py-3 flex items-center justify-between text-xs">
+                          <div>
+                            <p className="font-black text-[#1c1917]">{u.fullname}</p>
+                            <span className="text-[11px] font-bold text-purple-900 bg-purple-100 px-2 py-0.5 border border-purple-200">
+                              ID: {u.employeeId || u.id}
+                            </span>
                           </div>
-                        ))
-                      )}
-                    </div>
+                          <span className="uppercase font-black text-xs text-[#57534e]">{u.role}</span>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
-              ) : (
-                <div className="p-6 border-2 border-[#e2d8cd] bg-[#f8f5ee] text-xs font-bold text-[#57534e]">
-                  Technician status. Account provisioning restricted to administrators.
-                </div>
-              )}
+              </div>
             </motion.div>
           )}
 
