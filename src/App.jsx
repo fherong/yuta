@@ -6,8 +6,6 @@ import {
   subscribeToMotors,
   logTestReading, 
   createMotorAsset,
-  updateMotorAsset,
-  deleteMotorAsset,
   provisionUserWithId, 
   fetchRegisteredUsers,
   subscribeToLiveTelemetry,
@@ -17,8 +15,6 @@ import { exportTelemetryToCSV, exportMaintenanceReportPDF } from './utils/report
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   LogOut, 
-  Edit3,
-  Trash2,
   Plus,
   ArrowRight,
   CheckCircle2,
@@ -29,15 +25,15 @@ import {
   FileText,
   ShieldCheck,
   Users,
-  LogOut as LogOutIcon
+  LogOut as LogOutIcon,
+  Zap
 } from 'lucide-react';
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 
 export default function App() {
   const { currentUser, logout, isAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState('fleet');
   
-  // Default Fleet (Includes the simulator rig mapped to mock_gateway.py)
   const defaultMotors = [
     { id: 'motor-mock', motor_name: 'MOCK GATEWAY TEST RIG', location: 'LAB BENCH (SIMULATOR)', rated_voltage: 380 },
     { id: 'motor-001', motor_name: 'WATER PUMP 01', location: 'PUMP ROOM BASEMENT', rated_voltage: 480 },
@@ -48,33 +44,43 @@ export default function App() {
   const [motors, setMotors] = useState(defaultMotors);
   const [selectedMotor, setSelectedMotor] = useState(null);
 
-  // Real-time Streams
+  // Real-time & History States
   const [liveTelemetry, setLiveTelemetry] = useState(null);
   const [telemetryLogs, setTelemetryLogs] = useState([]);
   const [registeredUsers, setRegisteredUsers] = useState([]);
 
-  // Modals & Motor Registration
-  const [showAddMotorModal, setShowAddMotorModal] = useState(false);
-  const [newMotorName, setNewMotorName] = useState('');
-  const [newMotorLocation, setNewMotorLocation] = useState('');
-  const [newMotorVoltage, setNewMotorVoltage] = useState(380);
+  // Filter States
+  const [lineFilterGroup, setLineFilterGroup] = useState('ALL'); // ALL, PHASE_TO_PHASE, PHASE_TO_GROUND
+  const [voltageFilter, setVoltageFilter] = useState('ALL'); // ALL, 100, 250, 500, 1000
 
-  // Manual Safety Simulation Trigger
-  const [simRawIR, setSimRawIR] = useState(2.35);
+  // 6-Line Simulation Form Inputs
+  const [simAB, setSimAB] = useState(2.40);
+  const [simBC, setSimBC] = useState(2.42);
+  const [simCA, setSimCA] = useState(2.38);
+  const [simAG, setSimAG] = useState(2.25);
+  const [simBG, setSimBG] = useState(2.28);
+  const [simCG, setSimCG] = useState(2.20);
+  
   const [simTemp, setSimTemp] = useState(38.5);
+  const [simTestVoltage, setSimTestVoltage] = useState(1000);
+  const [simMinutes, setSimMinutes] = useState(1.0);
   const [simNcAux, setSimNcAux] = useState(true);
   const [simZeroVolt, setSimZeroVolt] = useState(true);
   const [isExecutingTest, setIsExecutingTest] = useState(false);
   const [testExecutionError, setTestExecutionError] = useState('');
 
-  // Admin User Provisioning by Employee ID
+  // Modals & User Management
+  const [showAddMotorModal, setShowAddMotorModal] = useState(false);
+  const [newMotorName, setNewMotorName] = useState('');
+  const [newMotorLocation, setNewMotorLocation] = useState('');
+  const [newMotorVoltage, setNewMotorVoltage] = useState(380);
+
   const [newEmpId, setNewEmpId] = useState('');
   const [newFullname, setNewFullname] = useState('');
   const [newPin, setNewPin] = useState('1234');
   const [newRole, setNewRole] = useState('Employee');
   const [userCreatedMessage, setUserCreatedMessage] = useState('');
 
-  // Navigation Items: Settings/Users is strictly rendered if isAdmin is true
   const navItems = [
     { id: 'fleet', label: 'FLEET', icon: LayoutGrid, section: 'global' },
     ...(selectedMotor ? [
@@ -87,11 +93,8 @@ export default function App() {
     ] : []),
   ];
 
-  // Route protection: redirect regular employee away from settings if left open
   useEffect(() => {
-    if (!isAdmin && activeTab === 'settings') {
-      setActiveTab('fleet');
-    }
+    if (!isAdmin && activeTab === 'settings') setActiveTab('fleet');
   }, [isAdmin, activeTab]);
 
   useEffect(() => {
@@ -117,28 +120,44 @@ export default function App() {
     const loadHistory = async () => {
       const historyData = await fetchTelemetryHistory();
       if (historyData && historyData.length > 0) {
-        const formatted = historyData.map((item) => ({
-          id: item.id || item.timestamp,
-          motor_id: item.motorId || 'motor-mock',
-          raw_ir: Number(item.rawIR || 0),
-          corrected_ir: Number(item.correctedIR || 0),
-          temperature: Number(item.temperatureC || 0),
-          rated_voltage: Number(item.motorVoltage || 380),
-          ir_min: Number(item.thresholdIR || 1.38),
-          motor_status: item.status || 'Normal',
-          operator_id: item.employeeId || 'GATEWAY-01',
-          operator_name: item.operatorName || 'Python Gateway AMU',
-          formattedDate: item.timestamp 
-            ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-            : 'LIVE'
-        }));
+        const formatted = historyData.map((item) => {
+          const rawAB = Number(item.raw_ab || item.rawIR || 2.40);
+          const rawBC = Number(item.raw_bc || item.rawIR || 2.42);
+          const rawCA = Number(item.raw_ca || item.rawIR || 2.38);
+          const rawAG = Number(item.raw_ag || item.rawIR || 2.25);
+          const rawBG = Number(item.raw_bg || item.rawIR || 2.28);
+          const rawCG = Number(item.raw_cg || item.rawIR || 2.20);
+          
+          const temp = Number(item.temperatureC || 38.5);
+          const kt = temp >= 40.0 ? Math.pow(0.5, (temp - 40.0) / 10.0) : Math.pow(2.0, (40.0 - temp) / 10.0);
+
+          return {
+            id: item.id || item.timestamp,
+            motor_id: item.motorId || 'motor-mock',
+            ab_corrected: Number((rawAB * kt).toFixed(2)),
+            bc_corrected: Number((rawBC * kt).toFixed(2)),
+            ca_corrected: Number((rawCA * kt).toFixed(2)),
+            ag_corrected: Number((rawAG * kt).toFixed(2)),
+            bg_corrected: Number((rawBG * kt).toFixed(2)),
+            cg_corrected: Number((rawCG * kt).toFixed(2)),
+            raw_ir: Number((rawCG * kt).toFixed(2)),
+            temperature: temp,
+            test_voltage: Number(item.testVoltage || item.test_voltage || item.ratedVoltage || 1000),
+            minutes: Number(item.minutes || 1.0),
+            ir_min: Number(item.thresholdIR || 1.38),
+            motor_status: item.status || 'NORMAL',
+            operator_name: item.operatorName || 'Python Gateway OCR',
+            formattedDate: item.timestamp 
+              ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : 'LIVE'
+          };
+        });
         setTelemetryLogs(formatted);
       }
     };
 
     loadHistory();
     const interval = setInterval(loadHistory, 4000);
-
     if (isAdmin) fetchRegisteredUsers().then(setRegisteredUsers).catch(console.error);
 
     return () => {
@@ -163,22 +182,42 @@ export default function App() {
     ? telemetryLogs
     : telemetryLogs.filter(l => l.motor_id === selectedMotor?.id);
 
+  // Filter dataset by test voltage safely with type casting
+  const chartDataset = filteredLogs.filter(log => {
+    if (voltageFilter === 'ALL') return true;
+    return Number(log.test_voltage) === Number(voltageFilter);
+  });
+
   const latest = (selectedMotor?.id === 'motor-mock' && liveTelemetry) ? {
-    raw_ir: Number(liveTelemetry.rawIR || 0).toFixed(2),
-    corrected_ir: Number(liveTelemetry.correctedIR || 0).toFixed(2),
-    temperature: Number(liveTelemetry.temperatureC || 0).toFixed(1),
-    motor_status: liveTelemetry.status || "Normal",
+    raw_ir: Number(liveTelemetry.rawIR || 2.20).toFixed(2),
+    ab_corrected: Number(liveTelemetry.raw_ab || 2.40).toFixed(2),
+    bc_corrected: Number(liveTelemetry.raw_bc || 2.42).toFixed(2),
+    ca_corrected: Number(liveTelemetry.raw_ca || 2.38).toFixed(2),
+    ag_corrected: Number(liveTelemetry.raw_ag || 2.25).toFixed(2),
+    bg_corrected: Number(liveTelemetry.raw_bg || 2.28).toFixed(2),
+    cg_corrected: Number(liveTelemetry.raw_cg || 2.20).toFixed(2),
+    temperature: Number(liveTelemetry.temperatureC || 38.5).toFixed(1),
+    test_voltage: Number(liveTelemetry.testVoltage || liveTelemetry.test_voltage || 1000),
+    minutes: Number(liveTelemetry.minutes || 1.0),
+    motor_status: liveTelemetry.status || "NORMAL",
     formattedDate: liveTelemetry.timestamp ? new Date(liveTelemetry.timestamp).toLocaleTimeString() : "SYNCED"
   } : (filteredLogs.length > 0 ? filteredLogs[0] : {
     raw_ir: "2.20",
-    corrected_ir: "2.20",
+    ab_corrected: "2.40",
+    bc_corrected: "2.42",
+    ca_corrected: "2.38",
+    ag_corrected: "2.25",
+    bg_corrected: "2.28",
+    cg_corrected: "2.20",
     temperature: "38.5",
-    motor_status: "Normal",
+    test_voltage: 1000,
+    minutes: 1.0,
+    motor_status: "NORMAL",
     formattedDate: "AWAITING TEST"
   });
 
   const currentEval = selectedMotor ? evaluateMotorStatus(
-    parseFloat(latest.raw_ir), 
+    parseFloat(latest.cg_corrected || latest.raw_ir), 
     parseFloat(latest.temperature), 
     selectedMotor.rated_voltage
   ) : { isSafe: true, ir40: 2.20, irMin: 1.38 };
@@ -192,8 +231,16 @@ export default function App() {
     try {
       await logTestReading({
         motorId: selectedMotor.id,
-        rawIR: simRawIR,
-        temperature: simTemp,
+        raw_ab: Number(simAB),
+        raw_bc: Number(simBC),
+        raw_ca: Number(simCA),
+        raw_ag: Number(simAG),
+        raw_bg: Number(simBG),
+        raw_cg: Number(simCG),
+        rawIR: Number(simCG),
+        temperature: Number(simTemp),
+        testVoltage: Number(simTestVoltage),
+        minutes: Number(simMinutes),
         ratedVoltage: selectedMotor.rated_voltage,
         employeeId: currentUser.employeeId || currentUser.uid,
         operatorName: currentUser.fullname || currentUser.email,
@@ -229,37 +276,33 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col md:flex-row min-h-screen bg-[#fbf9f5] text-[#1c1917] selection:bg-purple-700 selection:text-white">
+    <div className="flex flex-col md:flex-row min-h-screen bg-[#fbf9f5] text-[#1c1917] selection:bg-purple-700 selection:text-white font-mono">
       
-      {/* Tablet / Mobile Top Header */}
+      {/* Mobile Top Header */}
       <header className="md:hidden flex items-center justify-between px-5 py-3 border-b-2 border-[#e2d8cd] bg-[#fbf9f5]/90 backdrop-blur-md sticky top-0 z-40">
         <div className="flex items-center gap-2.5">
           <img src="/yuta-logo.png" alt="Y.U.T.A." className="w-6 h-6 object-contain" />
           <div>
-            <span className="text-xs font-mono font-black tracking-[0.25em] text-[#1c1917]">Y.U.T.A.</span>
+            <span className="text-xs font-black tracking-[0.25em] text-[#1c1917]">Y.U.T.A.</span>
             {selectedMotor && (
-              <span className="text-[10px] font-mono font-bold text-purple-800 block uppercase leading-tight">
+              <span className="text-[10px] font-bold text-purple-800 block uppercase leading-tight">
                 {selectedMotor.motor_name}
               </span>
             )}
           </div>
         </div>
-        <div className="flex items-center gap-3 font-mono">
+        <div className="flex items-center gap-3">
           <span className="text-[10px] font-bold text-[#57534e] uppercase">
             ID: {currentUser.employeeId || 'ADMIN'}
           </span>
-          <button 
-            onClick={logout} 
-            className="p-1.5 text-[#57534e] hover:text-rose-700 transition" 
-            title="Sign Out"
-          >
+          <button onClick={logout} className="p-1.5 text-[#57534e] hover:text-rose-700 transition" title="Sign Out">
             <LogOutIcon className="w-4 h-4 stroke-[2.5]" />
           </button>
         </div>
       </header>
 
       {/* Desktop Monolithic Sidebar */}
-      <aside className="hidden md:flex w-64 border-r-2 border-[#e2d8cd] bg-[#f8f5ee] flex-col justify-between p-6 shrink-0 font-mono">
+      <aside className="hidden md:flex w-64 border-r-2 border-[#e2d8cd] bg-[#f8f5ee] flex-col justify-between p-6 shrink-0">
         <div className="space-y-8">
           <div className="border-b-2 border-[#e2d8cd] pb-5">
             <div className="flex items-center gap-2.5">
@@ -273,14 +316,13 @@ export default function App() {
             <div className="p-3 bg-[#ede5d8] border border-[#cbd5e1]">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black tracking-widest text-purple-800 uppercase">ACTIVE STATION</span>
-                <button onClick={handleCloseActiveMotor} className="text-xs text-[#57534e] hover:text-[#1c1917] font-bold cursor-pointer" title="Exit station">✕</button>
+                <button onClick={handleCloseActiveMotor} className="text-xs text-[#57534e] hover:text-[#1c1917] font-bold cursor-pointer">✕</button>
               </div>
               <p className="text-xs font-black uppercase truncate mt-1">{selectedMotor.motor_name}</p>
               <p className="text-[10px] font-bold text-[#57534e] truncate">{selectedMotor.location}</p>
             </div>
           )}
 
-          {/* Desktop Nav Items (Clean Text UI) */}
           <nav className="space-y-1">
             {navItems.map((item) => {
               const isActive = activeTab === item.id;
@@ -310,7 +352,7 @@ export default function App() {
                 ID: {currentUser.employeeId || 'ADMIN-01'} [{currentUser.role}]
               </span>
             </div>
-            <button onClick={logout} className="text-[#57534e] hover:text-[#1c1917] transition p-1 cursor-pointer" title="Sign Out">
+            <button onClick={logout} className="text-[#57534e] hover:text-[#1c1917] transition p-1 cursor-pointer">
               <LogOut className="w-4 h-4 stroke-[2.5]" />
             </button>
           </div>
@@ -323,12 +365,12 @@ export default function App() {
           
           {/* TAB 1: FLEET OVERVIEW */}
           {activeTab === 'fleet' && (
-            <motion.div key="fleet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 max-w-6xl mx-auto font-mono">
+            <motion.div key="fleet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 max-w-6xl mx-auto">
               <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-3 border-b-2 border-[#e2d8cd] pb-6">
                 <div>
                   <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">FLEET MONITOR</span>
                   <h2 className="text-3xl font-extrabold text-[#1c1917] tracking-tight mt-1">Water Pump Stations</h2>
-                  <p className="text-xs text-[#44403c] font-bold mt-1">Select a pump station to unlock live monitoring, sensor logs, and safety interlocks</p>
+                  <p className="text-xs text-[#44403c] font-bold mt-1">Select a station to open real-time 6-line insulation diagnostics</p>
                 </div>
                 {isAdmin && (
                   <button 
@@ -384,9 +426,9 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* TAB 2: MONITOR (STATION SCOPED) */}
+          {/* TAB 2: MONITOR WORKSPACE */}
           {activeTab === 'overview' && selectedMotor && (
-            <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-10 max-w-6xl mx-auto font-mono">
+            <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 max-w-6xl mx-auto">
               <button onClick={handleCloseActiveMotor} className="inline-flex items-center gap-2 text-xs font-bold tracking-widest text-[#57534e] hover:text-[#1c1917] uppercase cursor-pointer">
                 <ArrowLeft className="w-4 h-4" /> FLEET OVERVIEW
               </button>
@@ -409,106 +451,235 @@ export default function App() {
                 </div>
               </header>
 
-              {/* Gauges Matrix */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                  <span className="text-xs font-bold tracking-[0.2em] text-[#57534e] uppercase block">EVALUATION</span>
-                  <div className="mt-4">
-                    <span className={`text-2xl font-black ${currentEval.isSafe ? 'text-emerald-800' : 'text-rose-700'}`}>
+              {/* Gauges Matrix including NOMINAL DATA BOX */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                
+                {/* 1. Evaluation Status */}
+                <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
+                  <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">EVALUATION</span>
+                  <div className="mt-3">
+                    <span className={`text-xl font-black ${currentEval.isSafe ? 'text-emerald-800' : 'text-rose-700'}`}>
                       {currentEval.isSafe ? 'NORMAL' : 'MAINT. REQ'}
                     </span>
                   </div>
-                  <p className="text-[11px] font-bold text-[#78716c] uppercase mt-4">IEEE STD 43-2013</p>
+                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">IEEE STD 43-2013</p>
                 </div>
 
-                <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                  <span className="text-xs font-bold tracking-[0.2em] text-[#57534e] uppercase block">NORMALIZED (40°C)</span>
-                  <div className="mt-2 flex items-baseline gap-1.5">
-                    <span className="text-4xl font-black tracking-tight">{currentEval.ir40}</span>
+                {/* 2. NOMINAL DATA BOX (Positioned next to Status) */}
+                <div className="border-2 border-purple-300 p-5 bg-purple-50/50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold tracking-[0.15em] text-purple-900 uppercase">NOMINAL DATA</span>
+                    <Zap className="w-3.5 h-3.5 text-purple-700" />
+                  </div>
+                  <div className="mt-2 space-y-1">
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-[11px] font-bold text-[#57534e]">VOLTAGE:</span>
+                      <span className="text-base font-black text-purple-900">{latest.test_voltage}V DC</span>
+                    </div>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-[11px] font-bold text-[#57534e]">DURATION:</span>
+                      <span className="text-sm font-black text-purple-900">{latest.minutes} MIN</span>
+                    </div>
+                  </div>
+                  <p className="text-[10px] font-bold text-purple-700 uppercase mt-2">UT501A INJECTED</p>
+                </div>
+
+                {/* 3. Min Line Reading */}
+                <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
+                  <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">MIN IR (40°C)</span>
+                  <div className="mt-2 flex items-baseline gap-1">
+                    <span className="text-3xl font-black tracking-tight">{currentEval.ir40}</span>
                     <span className="text-xs text-purple-700 font-black">MΩ</span>
                   </div>
-                  <p className="text-[11px] font-bold text-[#78716c] uppercase mt-4">RAW: {latest.raw_ir} MΩ</p>
+                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">LOWEST OF 6 LINES</p>
                 </div>
 
-                <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                  <span className="text-xs font-bold tracking-[0.2em] text-[#57534e] uppercase block">BASELINE LIMIT</span>
-                  <div className="mt-2 flex items-baseline gap-1.5">
-                    <span className="text-4xl font-black tracking-tight">{currentEval.irMin}</span>
+                {/* 4. Threshold Limit */}
+                <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
+                  <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">IEEE LIMIT</span>
+                  <div className="mt-2 flex items-baseline gap-1">
+                    <span className="text-3xl font-black tracking-tight">{currentEval.irMin}</span>
                     <span className="text-xs font-black text-[#57534e]">MΩ</span>
                   </div>
-                  <p className="text-[11px] font-bold text-[#78716c] uppercase mt-4">kV + 1 THRESHOLD</p>
+                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">kV + 1 THRESHOLD</p>
                 </div>
 
-                <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                  <span className="text-xs font-bold tracking-[0.2em] text-[#57534e] uppercase block">TEMPERATURE</span>
-                  <div className="mt-2 flex items-baseline gap-1.5">
-                    <span className="text-4xl font-black tracking-tight">{latest.temperature}</span>
+                {/* 5. Temperature */}
+                <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
+                  <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">TEMP PROBE</span>
+                  <div className="mt-2 flex items-baseline gap-1">
+                    <span className="text-3xl font-black tracking-tight">{latest.temperature}</span>
                     <span className="text-xs font-black text-[#57534e]">°C</span>
                   </div>
-                  <p className="text-[11px] font-bold text-[#78716c] uppercase mt-4">DS18B20 PROBE</p>
+                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">DS18B20 SENSOR</p>
                 </div>
               </div>
 
-              {/* Degradation Chart */}
-              <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                <div className="flex justify-between items-baseline mb-4">
-                  <h3 className="text-sm font-black tracking-[0.2em] uppercase">DEGRADATION TIMELINE</h3>
-                  <span className="text-xs font-bold text-[#57534e]">{filteredLogs.length} SAMPLES</span>
+              {/* 6-Line Degradation Timeline with Phase & Voltage Controls */}
+              <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee] space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-[#e2d8cd]">
+                  <div>
+                    <h3 className="text-sm font-black tracking-[0.2em] uppercase">6-LINE DEGRADATION TIMELINE</h3>
+                    <p className="text-xs font-bold text-[#57534e] mt-0.5">Filter by Phase-Phase (A-B, B-C, C-A), Phase-Ground (A-G, B-G, C-G) or Nominal Voltage</p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-4 text-xs font-bold">
+                    
+                    {/* Line Group Filter */}
+                    <div className="flex items-center gap-1 bg-[#ede5d8] p-1 border border-[#cbd5e1]">
+                      <span className="text-[10px] text-[#57534e] px-2">PATHS:</span>
+                      <button
+                        onClick={() => setLineFilterGroup('ALL')}
+                        className={`px-2.5 py-1 text-[11px] font-black cursor-pointer transition ${
+                          lineFilterGroup === 'ALL' ? 'bg-purple-700 text-white' : 'text-[#57534e] hover:text-[#1c1917]'
+                        }`}
+                      >
+                        ALL 6
+                      </button>
+                      <button
+                        onClick={() => setLineFilterGroup('PHASE_TO_PHASE')}
+                        className={`px-2.5 py-1 text-[11px] font-black cursor-pointer transition ${
+                          lineFilterGroup === 'PHASE_TO_PHASE' ? 'bg-purple-700 text-white' : 'text-[#57534e] hover:text-[#1c1917]'
+                        }`}
+                      >
+                        PHASE-PHASE
+                      </button>
+                      <button
+                        onClick={() => setLineFilterGroup('PHASE_TO_GROUND')}
+                        className={`px-2.5 py-1 text-[11px] font-black cursor-pointer transition ${
+                          lineFilterGroup === 'PHASE_TO_GROUND' ? 'bg-purple-700 text-white' : 'text-[#57534e] hover:text-[#1c1917]'
+                        }`}
+                      >
+                        PHASE-GROUND
+                      </button>
+                    </div>
+
+                    {/* Voltage Filter Subset */}
+                    <div className="flex items-center gap-1 bg-[#ede5d8] p-1 border border-[#cbd5e1]">
+                      <span className="text-[10px] text-[#57534e] px-2">VOLTAGE:</span>
+                      {['ALL', '100', '250', '500', '1000'].map(v => (
+                        <button
+                          key={v}
+                          onClick={() => setVoltageFilter(v)}
+                          className={`px-2 py-1 text-[11px] font-black cursor-pointer transition ${
+                            voltageFilter === v ? 'bg-[#1c1917] text-white' : 'text-[#57534e] hover:text-[#1c1917]'
+                          }`}
+                        >
+                          {v === 'ALL' ? 'ALL' : `${v}V`}
+                        </button>
+                      ))}
+                    </div>
+
+                  </div>
                 </div>
-                <div className="h-64 w-full">
+
+                <div className="h-80 w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={filteredLogs}>
+                    <LineChart data={chartDataset}>
                       <CartesianGrid strokeDasharray="2 2" stroke="#cbd5e1" vertical={false} />
                       <XAxis dataKey="formattedDate" stroke="#44403c" fontSize={11} />
                       <YAxis stroke="#44403c" fontSize={11} domain={[0, 'auto']} />
                       <Tooltip />
-                      <Line type="monotone" dataKey="corrected_ir" name="Normalized IR" stroke="#6d28d9" strokeWidth={3} />
-                      <Line type="monotone" dataKey="ir_min" name="Minimum Allowed" stroke="#dc2626" strokeWidth={2} strokeDasharray="4 4" />
+                      <Legend />
+                      
+                      {/* Phase-to-Phase Lines */}
+                      {(lineFilterGroup === 'ALL' || lineFilterGroup === 'PHASE_TO_PHASE') && (
+                        <>
+                          <Line type="monotone" dataKey="ab_corrected" name="A-B MΩ" stroke="#7c3aed" strokeWidth={2.5} dot={{ r: 3 }} />
+                          <Line type="monotone" dataKey="bc_corrected" name="B-C MΩ" stroke="#2563eb" strokeWidth={2.5} dot={{ r: 3 }} />
+                          <Line type="monotone" dataKey="ca_corrected" name="C-A MΩ" stroke="#059669" strokeWidth={2.5} dot={{ r: 3 }} />
+                        </>
+                      )}
+
+                      {/* Phase-to-Ground Lines */}
+                      {(lineFilterGroup === 'ALL' || lineFilterGroup === 'PHASE_TO_GROUND') && (
+                        <>
+                          <Line type="monotone" dataKey="ag_corrected" name="A-G MΩ" stroke="#d97706" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} />
+                          <Line type="monotone" dataKey="bg_corrected" name="B-G MΩ" stroke="#dc2626" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} />
+                          <Line type="monotone" dataKey="cg_corrected" name="C-G MΩ" stroke="#475569" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} />
+                        </>
+                      )}
+                      
+                      <Line type="monotone" dataKey="ir_min" name="IEEE Limit" stroke="#dc2626" strokeWidth={2} strokeDasharray="2 2" dot={false} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
               </div>
 
-              {/* Test Injection Sequence */}
+              {/* 6-Line Test Injection Module */}
               <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                <h3 className="text-sm font-black tracking-[0.2em] uppercase mb-4">MANUAL TEST INJECTION</h3>
+                <h3 className="text-sm font-black tracking-[0.2em] uppercase mb-4">INJECT 6-LINE TEST READINGS</h3>
                 {testExecutionError && <div className="p-3 mb-4 bg-rose-100 border border-rose-300 text-rose-800 text-xs font-bold">{testExecutionError}</div>}
+                
                 <form onSubmit={handleExecuteAutomatedTest} className="space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                    <div>
-                      <label className="text-xs font-bold text-[#44403c] block mb-1">RAW IR (MΩ)</label>
-                      <input type="number" step="0.01" value={simRawIR} onChange={e => setSimRawIR(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent" />
-                    </div>
-                    <div>
-                      <label className="text-xs font-bold text-[#44403c] block mb-1">TEMP (°C)</label>
-                      <input type="number" step="0.1" value={simTemp} onChange={e => setSimTemp(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent" />
-                    </div>
-                    <div>
-                      <label className="text-xs font-bold text-[#44403c] block mb-1">NC AUXILIARY</label>
-                      <select value={simNcAux ? "safe" : "unsafe"} onChange={e => setSimNcAux(e.target.value === "safe")} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent">
-                        <option value="safe">DISCONNECTED (SAFE)</option>
-                        <option value="unsafe">CLOSED (LIVE)</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-xs font-bold text-[#44403c] block mb-1">ZMPT101B SENSOR</label>
-                      <select value={simZeroVolt ? "safe" : "unsafe"} onChange={e => setSimZeroVolt(e.target.value === "safe")} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent">
-                        <option value="safe">0.00 VAC (ZERO V)</option>
-                        <option value="unsafe">VOLTAGE DETECTED</option>
-                      </select>
+                  
+                  <div className="border border-[#cbd5e1] p-3 bg-white space-y-3">
+                    <span className="text-[11px] font-black text-purple-900 uppercase block">PHASE-TO-PHASE READINGS (MΩ)</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div>
+                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">A-B PHASE</label>
+                        <input type="number" step="0.01" value={simAB} onChange={e => setSimAB(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">B-C PHASE</label>
+                        <input type="number" step="0.01" value={simBC} onChange={e => setSimBC(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">C-A PHASE</label>
+                        <input type="number" step="0.01" value={simCA} onChange={e => setSimCA(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
+                      </div>
                     </div>
                   </div>
+
+                  <div className="border border-[#cbd5e1] p-3 bg-white space-y-3">
+                    <span className="text-[11px] font-black text-amber-900 uppercase block">PHASE-TO-GROUND READINGS (MΩ)</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div>
+                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">A-G GROUND</label>
+                        <input type="number" step="0.01" value={simAG} onChange={e => setSimAG(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">B-G GROUND</label>
+                        <input type="number" step="0.01" value={simBG} onChange={e => setSimBG(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">C-G GROUND</label>
+                        <input type="number" step="0.01" value={simCG} onChange={e => setSimCG(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                    <div>
+                      <label className="text-[11px] font-bold text-[#44403c] block mb-1">TEST VOLTS</label>
+                      <select value={simTestVoltage} onChange={e => setSimTestVoltage(Number(e.target.value))} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold">
+                        <option value={100}>100V DC</option>
+                        <option value={250}>250V DC</option>
+                        <option value={500}>500V DC</option>
+                        <option value={1000}>1000V DC</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-bold text-[#44403c] block mb-1">DURATION (MIN)</label>
+                      <input type="number" step="0.5" value={simMinutes} onChange={e => setSimMinutes(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-bold text-[#44403c] block mb-1">TEMP (°C)</label>
+                      <input type="number" step="0.1" value={simTemp} onChange={e => setSimTemp(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
+                    </div>
+                  </div>
+
                   <button type="submit" disabled={isExecutingTest} className="py-2.5 px-6 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer">
-                    {isExecutingTest ? "RECORDING..." : "COMMIT TEST RECORD"}
+                    {isExecutingTest ? "RECORDING..." : "COMMIT ALL 6 LINE READINGS"}
                   </button>
                 </form>
               </div>
             </motion.div>
           )}
 
-          {/* TAB 3: LOGS (STATION SCOPED) */}
+          {/* TAB 3: LOGS & AUDIT */}
           {activeTab === 'telemetry' && selectedMotor && (
-            <motion.div key="telemetry" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6 max-w-6xl mx-auto font-mono">
+            <motion.div key="telemetry" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6 max-w-6xl mx-auto">
               <button onClick={handleCloseActiveMotor} className="inline-flex items-center gap-2 text-xs font-bold tracking-widest text-[#57534e] hover:text-[#1c1917] uppercase cursor-pointer">
                 <ArrowLeft className="w-4 h-4" /> FLEET OVERVIEW
               </button>
@@ -523,26 +694,36 @@ export default function App() {
                 <table className="w-full text-left text-xs">
                   <thead className="bg-[#f3eee6] border-b-2 border-[#e2d8cd] uppercase text-[#44403c]">
                     <tr>
-                      <th className="p-4">Timestamp</th>
-                      <th className="p-4">Raw IR</th>
-                      <th className="p-4">Temp</th>
-                      <th className="p-4">Normalized (40°C)</th>
-                      <th className="p-4">Status</th>
-                      <th className="p-4">Operator</th>
+                      <th className="p-3">Timestamp</th>
+                      <th className="p-3">Volts</th>
+                      <th className="p-3">Duration</th>
+                      <th className="p-3">A-B</th>
+                      <th className="p-3">B-C</th>
+                      <th className="p-3">C-A</th>
+                      <th className="p-3">A-G</th>
+                      <th className="p-3">B-G</th>
+                      <th className="p-3">C-G</th>
+                      <th className="p-3">Temp</th>
+                      <th className="p-3">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#e2d8cd]">
                     {filteredLogs.length === 0 ? (
-                      <tr><td colSpan="6" className="p-6 text-center text-[#78716c]">No historical logs for this station yet.</td></tr>
+                      <tr><td colSpan="11" className="p-6 text-center text-[#78716c]">No historical logs for this station yet.</td></tr>
                     ) : (
                       filteredLogs.map((log) => (
                         <tr key={log.id}>
-                          <td className="p-4 text-[#57534e]">{log.formattedDate}</td>
-                          <td className="p-4">{log.raw_ir} MΩ</td>
-                          <td className="p-4">{log.temperature} °C</td>
-                          <td className="p-4 font-black text-purple-900">{log.corrected_ir} MΩ</td>
-                          <td className="p-4 font-bold text-emerald-800">{log.motor_status}</td>
-                          <td className="p-4 text-[#57534e]">{log.operator_name} (ID: {log.operator_id})</td>
+                          <td className="p-3 text-[#57534e]">{log.formattedDate}</td>
+                          <td className="p-3 font-bold text-purple-900">{log.test_voltage}V</td>
+                          <td className="p-3">{log.minutes} min</td>
+                          <td className="p-3">{log.ab_corrected} MΩ</td>
+                          <td className="p-3">{log.bc_corrected} MΩ</td>
+                          <td className="p-3">{log.ca_corrected} MΩ</td>
+                          <td className="p-3">{log.ag_corrected} MΩ</td>
+                          <td className="p-3">{log.bg_corrected} MΩ</td>
+                          <td className="p-3">{log.cg_corrected} MΩ</td>
+                          <td className="p-3">{log.temperature} °C</td>
+                          <td className="p-3 font-bold text-emerald-800">{log.motor_status}</td>
                         </tr>
                       ))
                     )}
@@ -552,9 +733,9 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* TAB 4: INTERLOCKS (STATION SCOPED) */}
+          {/* TAB 4: SAFETY INTERLOCKS */}
           {activeTab === 'safety' && selectedMotor && (
-            <motion.div key="safety" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6 max-w-4xl mx-auto font-mono">
+            <motion.div key="safety" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6 max-w-4xl mx-auto">
               <button onClick={handleCloseActiveMotor} className="inline-flex items-center gap-2 text-xs font-bold tracking-widest text-[#57534e] hover:text-[#1c1917] uppercase cursor-pointer">
                 <ArrowLeft className="w-4 h-4" /> FLEET OVERVIEW
               </button>
@@ -563,22 +744,22 @@ export default function App() {
                 <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
                   <span className="text-xs uppercase font-bold text-[#57534e]">INTERLOCK 01</span>
                   <h3 className="text-sm font-black mt-1">NC AUXILIARY CONTACT</h3>
-                  <p className="text-xs text-[#57534e] mt-2">Monitors main disconnect physical starter contact state.</p>
+                  <p className="text-xs text-[#57534e] mt-2">Monitors contactor disconnect state to ensure zero backfeed potential.</p>
                   <p className="text-xs font-black text-emerald-800 mt-4">STATUS: CONFIRMED DE-ENERGIZED</p>
                 </div>
                 <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
                   <span className="text-xs uppercase font-bold text-[#57534e]">INTERLOCK 02</span>
-                  <h3 className="text-sm font-black mt-1">ZMPT101B SENSING</h3>
-                  <p className="text-xs text-[#57534e] mt-2">Active AC terminal detection verifying residual voltage.</p>
+                  <h3 className="text-sm font-black mt-1">ZMPT101B VOLTAGE SENSOR</h3>
+                  <p className="text-xs text-[#57534e] mt-2">Galvanically isolated sensing verifying zero residual line voltage.</p>
                   <p className="text-xs font-black text-emerald-800 mt-4">STATUS: 0.00 VAC (SAFE)</p>
                 </div>
               </div>
             </motion.div>
           )}
 
-          {/* TAB 5: USERS & ACCESS (ADMIN ONLY) */}
+          {/* TAB 5: USERS & ACCESS */}
           {activeTab === 'settings' && isAdmin && (
-            <motion.div key="settings" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 max-w-4xl mx-auto font-mono">
+            <motion.div key="settings" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 max-w-4xl mx-auto">
               <div className="border-b-2 border-[#e2d8cd] pb-6">
                 <span className="text-xs font-bold tracking-[0.25em] text-[#57534e] uppercase">EMPLOYEE DIRECTORY</span>
                 <h2 className="text-3xl font-extrabold tracking-tight mt-1">User & Operator Accounts</h2>
@@ -661,8 +842,8 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* Instagram-Style Bottom Navigation Dock (Tablet & Mobile only) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-[#fbf9f5]/95 backdrop-blur-lg border-t-2 border-[#e2d8cd] px-2 py-1.5 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] font-mono">
+      {/* Mobile Navigation Bar */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-[#fbf9f5]/95 backdrop-blur-lg border-t-2 border-[#e2d8cd] px-2 py-1.5">
         <div className="flex items-center justify-around max-w-lg mx-auto">
           {navItems.map((item) => {
             const Icon = item.icon;
@@ -696,7 +877,7 @@ export default function App() {
 
       {/* Admin Add Motor Modal */}
       {showAddMotorModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6 font-mono">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6">
           <div className="bg-[#fbf9f5] border-2 border-[#cbd5e1] p-8 w-full max-w-md shadow-2xl">
             <h3 className="text-sm tracking-[0.2em] font-black uppercase mb-4">REGISTER PUMP STATION</h3>
             <form onSubmit={async (e) => {
