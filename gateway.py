@@ -1,5 +1,17 @@
+import serial
+import json
+import time
+import requests
 
+# Configuration (Adjust port and URL as needed for your setup)
+SERIAL_PORT = "/dev/cu.usbserial-110"  # or 'COM3' on Windows
+BAUD_RATE = 9600
+FIREBASE_URL = "https://yuta-telemetry-default-rtdb.firebaseio.com/telemetry.json"
 
+try:
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+    time.sleep(2)  # Allow Arduino connection to settle
+    print(f"Connected to serial port {SERIAL_PORT}")
 except Exception as e:
     print(f"Failed to connect on {SERIAL_PORT}: {e}")
     exit() 
@@ -20,11 +32,8 @@ while True:
                 if response.status_code == 200:
                     print("Status: Successfully synced to Firebase!")
                 else:
-                    print(f"Firebase Error: {response.status_code} - {response.text}")
+                    print(f"Firebase Error: {response.status_code}\n{response.text}")
     except Exception as err:
         print(f"Error: {err}")
         
-    time.sleep(0.05)Last login: Fri Sep 18 17:11:37 on ttys000
-
-
-
+    time.sleep(0.05)
