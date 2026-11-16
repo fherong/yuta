@@ -1,0 +1,19 @@
+[Unit]
+Description=YUTA Arduino telemetry gateway
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_PI_USERNAME
+SupplementaryGroups=dialout
+WorkingDirectory=%h/yuta
+Environment=SERIAL_PORT=/dev/ttyACM0
+Environment=BAUD_RATE=9600
+EnvironmentFile=-/etc/yuta-gateway.env
+ExecStart=%h/yuta/.venv/bin/python %h/yuta/gateway.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
