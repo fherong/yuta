@@ -1,7 +1,13 @@
 import unittest
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-from gateway import FIREBASE_DATABASE_URL, build_log_record, sync_to_firebase
+from gateway import (
+    FIREBASE_DATABASE_URL,
+    build_log_record,
+    run_gateway,
+    sync_to_firebase,
+)
 
 
 class BuildLogRecordTests(unittest.TestCase):
@@ -77,6 +83,24 @@ class BuildLogRecordTests(unittest.TestCase):
             json=record,
             timeout=10,
         )
+
+    def test_retries_serial_connection_until_arduino_is_ready(self):
+        class SerialException(Exception):
+            pass
+
+        arduino = Mock()
+        arduino.__enter__ = Mock(return_value=arduino)
+        arduino.__exit__ = Mock(return_value=False)
+        arduino.readline.side_effect = KeyboardInterrupt
+        serial_module = SimpleNamespace(SerialException=SerialException)
+        serial_module.Serial = Mock(side_effect=[SerialException("not ready"), arduino])
+
+        with patch("gateway.time.sleep") as sleep:
+            run_gateway(serial_module, Exception, Mock(), None)
+
+        self.assertEqual(serial_module.Serial.call_count, 2)
+        sleep.assert_any_call(5)
+        sleep.assert_any_call(2)
 
 
 if __name__ == "__main__":

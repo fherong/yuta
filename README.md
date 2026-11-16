@@ -10,7 +10,7 @@ Install the Python dependencies on the Pi:
 python3 -m pip install -r requirements.txt
 ```
 
-Connect the Arduino and run the gateway:
+Connect the Arduino and run the gateway manually to test it:
 
 ```bash
 SERIAL_PORT=/dev/ttyACM0 python3 gateway.py
@@ -33,6 +33,32 @@ The Arduino should send one JSON object followed by a newline for each completed
 ```
 
 The two safety values must be JSON booleans. Optional fields are `employeeId`, `operatorName`, `minutes`, and the individual readings `raw_ab`, `raw_bc`, `raw_ca`, `raw_ag`, `raw_bg`, and `raw_cg`. The gateway records unsafe interlock responses too, marking them `SAFETY INTERLOCK FAILED`; it does not mark them as safe or discard them. It calculates temperature-corrected IR and the threshold, then writes records to `/live` and `/history`, which are the paths consumed by the website.
+
+### Automatic startup in a monitorless box
+
+The gateway keeps retrying the serial connection if the Arduino is not ready yet or is unplugged, so it can start before the Arduino. To have it start automatically when the Pi boots, install the systemd service after installing the Python dependencies:
+
+```bash
+sudo cp deploy/yuta-gateway.service /etc/systemd/system/yuta-gateway.service
+sudo nano /etc/systemd/system/yuta-gateway.service
+```
+
+In the service file, replace `YOUR_PI_USERNAME` with the Pi login name. The example expects the repository at `/home/<username>/yuta` and the virtual environment at `/home/<username>/yuta/.venv`; update `WorkingDirectory` and `ExecStart` if yours differ. Set `SERIAL_PORT` to the Arduino's actual device. Add the Pi user to the `dialout` group if needed, then reboot or log out and back in:
+
+```bash
+sudo usermod -aG dialout YOUR_PI_USERNAME
+sudo systemctl daemon-reload
+sudo systemctl enable --now yuta-gateway.service
+```
+
+Check whether it is running and view its logs with:
+
+```bash
+systemctl status yuta-gateway.service
+journalctl -u yuta-gateway.service -f
+```
+
+The optional `/etc/yuta-gateway.env` file can hold `FIREBASE_AUTH_TOKEN=...` if database authentication is required. Keep that file off the repository and restrict access to it. With the service enabled, the Pi can run headlessly: after power returns, systemd starts the gateway and it waits/retries for the Arduino. The Pi needs internet access when a reading is sent; if Firebase is unreachable during sync, the gateway reports the error but does not queue that record for later.
 
 ## Web application
 

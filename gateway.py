@@ -135,43 +135,52 @@ def sync_to_firebase(record, session, auth_token=None):
     history_response.raise_for_status()
 
 
+def run_gateway(serial_module, request_exception, session, auth_token):
+    try:
+        while True:
+            try:
+                with serial_module.Serial(SERIAL_PORT, BAUD_RATE, timeout=1) as arduino:
+                    time.sleep(2)
+                    print(f"Connected to Arduino on {SERIAL_PORT} at {BAUD_RATE} baud")
+                    print("Waiting for one JSON log record per serial line...")
+
+                    while True:
+                        line = arduino.readline().decode("utf-8", errors="replace").strip()
+                        if not line:
+                            continue
+                        if not line.startswith("{"):
+                            print(f"Ignoring Arduino output: {line}")
+                            continue
+
+                        try:
+                            data = json.loads(line)
+                            record = build_log_record(data)
+                            sync_to_firebase(record, session, auth_token)
+                            print(
+                                f"Logged motor {record['motorId']} | "
+                                f"{record['status']} | {record['timestamp']}"
+                            )
+                        except (json.JSONDecodeError, ValueError) as error:
+                            print(f"Invalid Arduino record: {error}")
+                        except request_exception as error:
+                            print(f"Firebase sync failed; record was not confirmed: {error}")
+            except serial_module.SerialException as error:
+                print(
+                    f"Arduino serial port {SERIAL_PORT} unavailable: {error}. "
+                    "Retrying in 5 seconds..."
+                )
+                time.sleep(5)
+    except KeyboardInterrupt:
+        print("\nGateway stopped.")
+
+
 def main():
     import serial
     import requests
 
     auth_token = os.getenv("FIREBASE_AUTH_TOKEN")
     session = requests.Session()
-
-    try:
-        with serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1) as arduino:
-            time.sleep(2)
-            print(f"Connected to Arduino on {SERIAL_PORT} at {BAUD_RATE} baud")
-            print("Waiting for one JSON log record per serial line...")
-
-            while True:
-                line = arduino.readline().decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                if not line.startswith("{"):
-                    print(f"Ignoring Arduino output: {line}")
-                    continue
-
-                try:
-                    data = json.loads(line)
-                    record = build_log_record(data)
-                    sync_to_firebase(record, session, auth_token)
-                    print(
-                        f"Logged motor {record['motorId']} | "
-                        f"{record['status']} | {record['timestamp']}"
-                    )
-                except (json.JSONDecodeError, ValueError) as error:
-                    print(f"Invalid Arduino record: {error}")
-                except requests.RequestException as error:
-                    print(f"Firebase sync failed; record was not confirmed: {error}")
-    except serial.SerialException as error:
-        raise SystemExit(f"Could not open Arduino serial port {SERIAL_PORT}: {error}") from error
-    except KeyboardInterrupt:
-        print("\nGateway stopped.")
+    run_gateway(serial, requests.RequestException, session, auth_token)
 
 
 if __name__ == "__main__":
