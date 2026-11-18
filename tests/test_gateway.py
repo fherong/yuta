@@ -1,12 +1,18 @@
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from gateway import (
+    DurableOutbox,
     FIREBASE_DATABASE_URL,
+    build_ocr_record,
     build_log_record,
+    capture_last_stable_reading,
+    parse_ut501a_reading,
     run_gateway,
     sync_to_firebase,
+    sync_outbox_once,
 )
 
 
@@ -83,6 +89,92 @@ class BuildLogRecordTests(unittest.TestCase):
             json=record,
             timeout=10,
         )
+
+    def test_outbox_persists_until_idempotent_firebase_sync_succeeds(self):
+        class RequestException(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = f"{directory}/outbox.sqlite3"
+            outbox = DurableOutbox(path)
+            record = build_log_record(self.message)
+            record_id = outbox.enqueue(record)
+            reopened = DurableOutbox(path)
+            session = Mock()
+            session.put.side_effect = [
+                Mock(),
+                RequestException("offline"),
+                Mock(),
+                Mock(),
+            ]
+
+            self.assertFalse(
+                sync_outbox_once(reopened, session, None, RequestException)
+            )
+            self.assertEqual(reopened.oldest(), (record_id, record))
+
+            self.assertTrue(
+                sync_outbox_once(reopened, session, None, RequestException)
+            )
+            self.assertIsNone(reopened.oldest())
+            session.put.assert_any_call(
+                f"{FIREBASE_DATABASE_URL}/live.json",
+                params=None,
+                json=record,
+                timeout=10,
+            )
+            session.put.assert_any_call(
+                f"{FIREBASE_DATABASE_URL}/history/{record_id}.json",
+                params=None,
+                json=record,
+                timeout=10,
+            )
+
+    def test_parses_ut501a_reading_as_gigaohms(self):
+        self.assertEqual(parse_ut501a_reading(" 1.25 "), 1.25)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            parse_ut501a_reading("OL")
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            parse_ut501a_reading("1.2 500")
+
+    def test_ocr_record_preserves_gigaohms_and_supplies_website_megohms(self):
+        record = build_ocr_record(1.25, "motor-001", "2026-01-01T00:00:00Z")
+
+        self.assertEqual(record["rawIR_GOhm"], 1.25)
+        self.assertEqual(record["rawIR"], 1250)
+        self.assertEqual(record["source"], "ocr")
+        self.assertNotIn("temperatureC", record)
+        self.assertNotIn("safetyOK", record)
+
+    def test_capture_uses_the_last_stable_value_in_the_test_window(self):
+        class Clock:
+            now = 0
+
+            def monotonic(self):
+                return self.now
+
+            def sleep(self, duration):
+                self.now += duration
+
+        class Camera:
+            frame = 0
+
+            def read(self):
+                self.frame += 1
+                return True, self.frame
+
+        clock = Clock()
+        readings = ["1.0"] * 4 + ["2.0"] * 4
+        value = capture_last_stable_reading(
+            Camera(),
+            lambda frame: readings[frame - 1],
+            duration=2,
+            sample_interval=0.25,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(value, 2.0)
 
     def test_retries_serial_connection_until_arduino_is_ready(self):
         class SerialException(Exception):

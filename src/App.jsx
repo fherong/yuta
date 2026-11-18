@@ -30,9 +30,31 @@ import {
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 
+const RESISTANCE_UNITS = [
+  { label: 'Ω', ohms: 1 },
+  { label: 'kΩ', ohms: 1e3 },
+  { label: 'MΩ', ohms: 1e6 },
+  { label: 'GΩ', ohms: 1e9 },
+  { label: 'TΩ', ohms: 1e12 },
+];
+
+const convertGOhm = (value, unit) => {
+  const selectedUnit = RESISTANCE_UNITS.find(({ label }) => label === unit) || RESISTANCE_UNITS[2];
+  const converted = Number(value) * 1e9 / selectedUnit.ohms;
+  return Number.isFinite(converted)
+    ? Number(converted.toPrecision(6)).toLocaleString(undefined, { maximumSignificantDigits: 6 })
+    : '—';
+};
+
+const getSavedResistanceUnit = () => {
+  const savedUnit = localStorage.getItem('yutaResistanceUnit');
+  return RESISTANCE_UNITS.some(({ label }) => label === savedUnit) ? savedUnit : 'MΩ';
+};
+
 export default function App() {
   const { currentUser, logout, isAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState('fleet');
+  const [resistanceUnit, setResistanceUnit] = useState(getSavedResistanceUnit);
   
   const defaultMotors = [
     { id: 'motor-mock', motor_name: 'MOCK GATEWAY TEST RIG', location: 'LAB BENCH (SIMULATOR)', rated_voltage: 380 },
@@ -81,6 +103,10 @@ export default function App() {
   const [newRole, setNewRole] = useState('Employee');
   const [userCreatedMessage, setUserCreatedMessage] = useState('');
 
+  useEffect(() => {
+    localStorage.setItem('yutaResistanceUnit', resistanceUnit);
+  }, [resistanceUnit]);
+
   const navItems = [
     { id: 'fleet', label: 'FLEET', icon: LayoutGrid, section: 'global' },
     ...(selectedMotor ? [
@@ -121,6 +147,23 @@ export default function App() {
       const historyData = await fetchTelemetryHistory();
       if (historyData && historyData.length > 0) {
         const formatted = historyData.map((item) => {
+          const formattedDate = item.timestamp
+            ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : 'LIVE';
+
+          if (item.source === 'ocr') {
+            const valueGOhm = Number(item.rawIR_GOhm ?? Number(item.rawIR) / 1000);
+            return {
+              id: item.id || item.timestamp,
+              motor_id: item.motorId || 'unassigned',
+              source: 'ocr',
+              raw_ir_gohm: Number.isFinite(valueGOhm) ? valueGOhm : null,
+              raw_ir: Number.isFinite(valueGOhm) ? valueGOhm * 1000 : null,
+              motor_status: item.status || 'OCR READING',
+              formattedDate,
+            };
+          }
+
           const rawAB = Number(item.raw_ab || item.rawIR || 2.40);
           const rawBC = Number(item.raw_bc || item.rawIR || 2.42);
           const rawCA = Number(item.raw_ca || item.rawIR || 2.38);
@@ -134,6 +177,7 @@ export default function App() {
           return {
             id: item.id || item.timestamp,
             motor_id: item.motorId || 'motor-mock',
+            source: 'arduino',
             ab_corrected: Number((rawAB * kt).toFixed(2)),
             bc_corrected: Number((rawBC * kt).toFixed(2)),
             ca_corrected: Number((rawCA * kt).toFixed(2)),
@@ -147,9 +191,7 @@ export default function App() {
             ir_min: Number(item.thresholdIR || 1.38),
             motor_status: item.status || 'NORMAL',
             operator_name: item.operatorName || 'Python Gateway OCR',
-            formattedDate: item.timestamp 
-              ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              : 'LIVE'
+            formattedDate
           };
         });
         setTelemetryLogs(formatted);
@@ -181,14 +223,25 @@ export default function App() {
   const filteredLogs = selectedMotor?.id === 'motor-mock'
     ? telemetryLogs
     : telemetryLogs.filter(l => l.motor_id === selectedMotor?.id);
+  const overviewLogs = filteredLogs.filter((log) => log.source !== 'ocr');
+  const latestOcr = filteredLogs.find((log) => log.source === 'ocr') ||
+    (liveTelemetry?.source === 'ocr' && liveTelemetry.motorId === selectedMotor?.id
+      ? {
+          raw_ir_gohm: Number(liveTelemetry.rawIR_GOhm ?? Number(liveTelemetry.rawIR) / 1000),
+        }
+      : null);
+  const liveOcrForSelected = liveTelemetry?.source === 'ocr' &&
+    liveTelemetry.motorId === selectedMotor?.id;
+  const hasOcrOnly = latestOcr != null &&
+    (filteredLogs[0]?.source === 'ocr' || (filteredLogs.length === 0 && liveOcrForSelected));
 
   // Filter dataset by test voltage safely with type casting
-  const chartDataset = filteredLogs.filter(log => {
+  const chartDataset = overviewLogs.filter(log => {
     if (voltageFilter === 'ALL') return true;
     return Number(log.test_voltage) === Number(voltageFilter);
   });
 
-  const latest = (selectedMotor?.id === 'motor-mock' && liveTelemetry) ? {
+  const latest = (selectedMotor?.id === 'motor-mock' && liveTelemetry?.source !== 'ocr' && liveTelemetry) ? {
     raw_ir: Number(liveTelemetry.rawIR || 2.20).toFixed(2),
     ab_corrected: Number(liveTelemetry.raw_ab || 2.40).toFixed(2),
     bc_corrected: Number(liveTelemetry.raw_bc || 2.42).toFixed(2),
@@ -201,7 +254,7 @@ export default function App() {
     minutes: Number(liveTelemetry.minutes || 1.0),
     motor_status: liveTelemetry.status || "NORMAL",
     formattedDate: liveTelemetry.timestamp ? new Date(liveTelemetry.timestamp).toLocaleTimeString() : "SYNCED"
-  } : (filteredLogs.length > 0 ? filteredLogs[0] : {
+  } : (overviewLogs.length > 0 ? overviewLogs[0] : {
     raw_ir: "2.20",
     ab_corrected: "2.40",
     bc_corrected: "2.42",
@@ -216,7 +269,7 @@ export default function App() {
     formattedDate: "AWAITING TEST"
   });
 
-  const currentEval = selectedMotor ? evaluateMotorStatus(
+  const currentEval = hasOcrOnly ? { isSafe: null, ir40: null, irMin: null } : selectedMotor ? evaluateMotorStatus(
     parseFloat(latest.cg_corrected || latest.raw_ir), 
     parseFloat(latest.temperature), 
     selectedMotor.rated_voltage
@@ -458,11 +511,13 @@ export default function App() {
                 <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
                   <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">EVALUATION</span>
                   <div className="mt-3">
-                    <span className={`text-xl font-black ${currentEval.isSafe ? 'text-emerald-800' : 'text-rose-700'}`}>
-                      {currentEval.isSafe ? 'NORMAL' : 'MAINT. REQ'}
+                    <span className={`text-xl font-black ${hasOcrOnly ? 'text-purple-800' : currentEval.isSafe ? 'text-emerald-800' : 'text-rose-700'}`}>
+                      {hasOcrOnly ? 'OCR VALUE ONLY' : currentEval.isSafe ? 'NORMAL' : 'MAINT. REQ'}
                     </span>
                   </div>
-                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">IEEE STD 43-2013</p>
+                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">
+                    {hasOcrOnly ? 'NO TEMPERATURE OR VOLTAGE DATA' : 'IEEE STD 43-2013'}
+                  </p>
                 </div>
 
                 {/* 2. NOMINAL DATA BOX (Positioned next to Status) */}
@@ -474,46 +529,65 @@ export default function App() {
                   <div className="mt-2 space-y-1">
                     <div className="flex items-baseline justify-between">
                       <span className="text-[11px] font-bold text-[#57534e]">VOLTAGE:</span>
-                      <span className="text-base font-black text-purple-900">{latest.test_voltage}V DC</span>
+                      <span className="text-base font-black text-purple-900">{hasOcrOnly || latest.test_voltage == null ? '—' : `${latest.test_voltage}V DC`}</span>
                     </div>
                     <div className="flex items-baseline justify-between">
                       <span className="text-[11px] font-bold text-[#57534e]">DURATION:</span>
-                      <span className="text-sm font-black text-purple-900">{latest.minutes} MIN</span>
+                      <span className="text-sm font-black text-purple-900">{hasOcrOnly || latest.minutes == null ? '—' : `${latest.minutes} MIN`}</span>
                     </div>
                   </div>
-                  <p className="text-[10px] font-bold text-purple-700 uppercase mt-2">UT501A INJECTED</p>
+                  <p className="text-[10px] font-bold text-purple-700 uppercase mt-2">
+                    {hasOcrOnly ? 'NOT CAPTURED BY OCR' : 'UT501A INJECTED'}
+                  </p>
                 </div>
 
                 {/* 3. Min Line Reading */}
                 <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
                   <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">MIN IR (40°C)</span>
                   <div className="mt-2 flex items-baseline gap-1">
-                    <span className="text-3xl font-black tracking-tight">{currentEval.ir40}</span>
+                    <span className="text-3xl font-black tracking-tight">{currentEval.ir40 ?? '—'}</span>
                     <span className="text-xs text-purple-700 font-black">MΩ</span>
                   </div>
-                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">LOWEST OF 6 LINES</p>
+                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">
+                    {hasOcrOnly ? 'NO PHASE READINGS' : 'LOWEST OF 6 LINES'}
+                  </p>
                 </div>
 
                 {/* 4. Threshold Limit */}
                 <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
                   <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">IEEE LIMIT</span>
                   <div className="mt-2 flex items-baseline gap-1">
-                    <span className="text-3xl font-black tracking-tight">{currentEval.irMin}</span>
+                    <span className="text-3xl font-black tracking-tight">{currentEval.irMin ?? '—'}</span>
                     <span className="text-xs font-black text-[#57534e]">MΩ</span>
                   </div>
-                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">kV + 1 THRESHOLD</p>
+                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">
+                    {hasOcrOnly ? 'NO VOLTAGE DATA' : 'kV + 1 THRESHOLD'}
+                  </p>
                 </div>
 
                 {/* 5. Temperature */}
                 <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
                   <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">TEMP PROBE</span>
                   <div className="mt-2 flex items-baseline gap-1">
-                    <span className="text-3xl font-black tracking-tight">{latest.temperature}</span>
+                    <span className="text-3xl font-black tracking-tight">{hasOcrOnly ? '—' : latest.temperature ?? '—'}</span>
                     <span className="text-xs font-black text-[#57534e]">°C</span>
                   </div>
-                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">DS18B20 SENSOR</p>
+                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">
+                    {hasOcrOnly ? 'NOT CAPTURED BY OCR' : 'DS18B20 SENSOR'}
+                  </p>
                 </div>
               </div>
+
+              {latestOcr && (
+                <div className="border-2 border-purple-300 p-5 bg-purple-50/50">
+                  <span className="text-xs font-bold tracking-[0.15em] text-purple-900 uppercase block">LATEST UT501A READING</span>
+                  <div className="mt-2 text-3xl font-black text-purple-900">
+                    {latestOcr.raw_ir_gohm == null
+                      ? '—'
+                      : `${convertGOhm(latestOcr.raw_ir_gohm, resistanceUnit)} ${resistanceUnit}`}
+                  </div>
+                </div>
+              )}
 
               {/* 6-Line Degradation Timeline with Phase & Voltage Controls */}
               <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee] space-y-4">
@@ -574,8 +648,13 @@ export default function App() {
                 </div>
 
                 <div className="h-80 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={chartDataset}>
+                  {hasOcrOnly ? (
+                    <div className="h-full flex items-center justify-center text-sm font-bold text-[#78716c]">
+                      UT501A readings are available in the Logs tab; no six-line readings were captured.
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={chartDataset}>
                       <CartesianGrid strokeDasharray="2 2" stroke="#cbd5e1" vertical={false} />
                       <XAxis dataKey="formattedDate" stroke="#44403c" fontSize={11} />
                       <YAxis stroke="#44403c" fontSize={11} domain={[0, 'auto']} />
@@ -601,8 +680,9 @@ export default function App() {
                       )}
                       
                       <Line type="monotone" dataKey="ir_min" name="IEEE Limit" stroke="#dc2626" strokeWidth={2} strokeDasharray="2 2" dot={false} />
-                    </LineChart>
-                  </ResponsiveContainer>
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
                 </div>
               </div>
 
@@ -685,9 +765,21 @@ export default function App() {
               </button>
               <div className="flex justify-between items-baseline">
                 <h2 className="text-2xl font-black uppercase">Historical Audit: {selectedMotor.motor_name}</h2>
-                <button onClick={() => exportTelemetryToCSV(filteredLogs, selectedMotor)} className="px-3 py-1.5 border border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold uppercase hover:bg-[#ede5d8]">
-                  EXPORT CSV
-                </button>
+                <div className="flex items-center gap-3">
+                  <label className="text-xs font-bold uppercase text-[#44403c]">
+                    OCR unit
+                    <select
+                      value={resistanceUnit}
+                      onChange={(event) => setResistanceUnit(event.target.value)}
+                      className="ml-2 border border-[#cbd5e1] bg-[#f3eee6] px-2 py-1"
+                    >
+                      {RESISTANCE_UNITS.map(({ label }) => <option key={label}>{label}</option>)}
+                    </select>
+                  </label>
+                  <button onClick={() => exportTelemetryToCSV(filteredLogs, selectedMotor)} className="px-3 py-1.5 border border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold uppercase hover:bg-[#ede5d8]">
+                    EXPORT CSV
+                  </button>
+                </div>
               </div>
 
               <div className="border-2 border-[#e2d8cd] overflow-x-auto bg-[#f8f5ee]">
@@ -704,25 +796,31 @@ export default function App() {
                       <th className="p-3">B-G</th>
                       <th className="p-3">C-G</th>
                       <th className="p-3">Temp</th>
+                      <th className="p-3">OCR Reading</th>
                       <th className="p-3">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#e2d8cd]">
                     {filteredLogs.length === 0 ? (
-                      <tr><td colSpan="11" className="p-6 text-center text-[#78716c]">No historical logs for this station yet.</td></tr>
+                      <tr><td colSpan="12" className="p-6 text-center text-[#78716c]">No historical logs for this station yet.</td></tr>
                     ) : (
                       filteredLogs.map((log) => (
                         <tr key={log.id}>
                           <td className="p-3 text-[#57534e]">{log.formattedDate}</td>
-                          <td className="p-3 font-bold text-purple-900">{log.test_voltage}V</td>
-                          <td className="p-3">{log.minutes} min</td>
-                          <td className="p-3">{log.ab_corrected} MΩ</td>
-                          <td className="p-3">{log.bc_corrected} MΩ</td>
-                          <td className="p-3">{log.ca_corrected} MΩ</td>
-                          <td className="p-3">{log.ag_corrected} MΩ</td>
-                          <td className="p-3">{log.bg_corrected} MΩ</td>
-                          <td className="p-3">{log.cg_corrected} MΩ</td>
-                          <td className="p-3">{log.temperature} °C</td>
+                          <td className="p-3 font-bold text-purple-900">{log.test_voltage == null ? '—' : `${log.test_voltage}V`}</td>
+                          <td className="p-3">{log.minutes == null ? '—' : `${log.minutes} min`}</td>
+                          <td className="p-3">{log.ab_corrected == null ? '—' : `${log.ab_corrected} MΩ`}</td>
+                          <td className="p-3">{log.bc_corrected == null ? '—' : `${log.bc_corrected} MΩ`}</td>
+                          <td className="p-3">{log.ca_corrected == null ? '—' : `${log.ca_corrected} MΩ`}</td>
+                          <td className="p-3">{log.ag_corrected == null ? '—' : `${log.ag_corrected} MΩ`}</td>
+                          <td className="p-3">{log.bg_corrected == null ? '—' : `${log.bg_corrected} MΩ`}</td>
+                          <td className="p-3">{log.cg_corrected == null ? '—' : `${log.cg_corrected} MΩ`}</td>
+                          <td className="p-3">{log.temperature == null ? '—' : `${log.temperature} °C`}</td>
+                          <td className="p-3 font-bold">
+                            {log.source === 'ocr' && log.raw_ir_gohm != null
+                              ? `${convertGOhm(log.raw_ir_gohm, resistanceUnit)} ${resistanceUnit}`
+                              : '—'}
+                          </td>
                           <td className="p-3 font-bold text-emerald-800">{log.motor_status}</td>
                         </tr>
                       ))
@@ -745,13 +843,17 @@ export default function App() {
                   <span className="text-xs uppercase font-bold text-[#57534e]">INTERLOCK 01</span>
                   <h3 className="text-sm font-black mt-1">NC AUXILIARY CONTACT</h3>
                   <p className="text-xs text-[#57534e] mt-2">Monitors contactor disconnect state to ensure zero backfeed potential.</p>
-                  <p className="text-xs font-black text-emerald-800 mt-4">STATUS: CONFIRMED DE-ENERGIZED</p>
+                  <p className={`text-xs font-black mt-4 ${hasOcrOnly ? 'text-amber-800' : 'text-emerald-800'}`}>
+                    STATUS: {hasOcrOnly ? 'NOT PROVIDED BY OCR' : 'CONFIRMED DE-ENERGIZED'}
+                  </p>
                 </div>
                 <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
                   <span className="text-xs uppercase font-bold text-[#57534e]">INTERLOCK 02</span>
                   <h3 className="text-sm font-black mt-1">ZMPT101B VOLTAGE SENSOR</h3>
                   <p className="text-xs text-[#57534e] mt-2">Galvanically isolated sensing verifying zero residual line voltage.</p>
-                  <p className="text-xs font-black text-emerald-800 mt-4">STATUS: 0.00 VAC (SAFE)</p>
+                  <p className={`text-xs font-black mt-4 ${hasOcrOnly ? 'text-amber-800' : 'text-emerald-800'}`}>
+                    STATUS: {hasOcrOnly ? 'NOT PROVIDED BY OCR' : '0.00 VAC (SAFE)'}
+                  </p>
                 </div>
               </div>
             </motion.div>

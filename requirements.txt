@@ -1,2 +1,4 @@
 pyserial
 requests
+opencv-python-headless
+pytesseract

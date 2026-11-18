@@ -1,12 +1,12 @@
 [Unit]
-Description=YUTA Arduino telemetry gateway
+Description=YUTA UT501A OCR telemetry gateway
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
 User=YOUR_PI_USERNAME
-SupplementaryGroups=dialout
+SupplementaryGroups=dialout video
 WorkingDirectory=%h/yuta
 Environment=SERIAL_PORT=/dev/ttyACM0
 Environment=BAUD_RATE=9600

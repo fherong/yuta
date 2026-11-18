@@ -1,24 +1,39 @@
 # YUTA Telemetry
 
-## Raspberry Pi Arduino gateway
+## Raspberry Pi gateways
 
-`gateway.py` runs on the Raspberry Pi, reads newline-delimited JSON from the Arduino, updates the website's live telemetry, and appends each accepted reading to its history logs.
+Both gateway programs save accepted readings to a SQLite outbox on the Pi's SD card (`gateway-outbox.sqlite3` beside the scripts) before uploading them to Firebase. If the internet or Firebase is unavailable, records remain queued and are retried every two seconds. History writes use stable record IDs, so a retry after an interrupted upload does not create duplicates. `GATEWAY_QUEUE_PATH` can move the outbox to another SD-card directory.
 
-Install the Python dependencies on the Pi:
+Install the Python dependencies on the Pi and the Tesseract OCR engine:
 
 ```bash
 python3 -m pip install -r requirements.txt
+sudo apt install tesseract-ocr
 ```
 
-Connect the Arduino and run the gateway manually to test it:
+### UT501A camera OCR (`gateway.py`)
+
+Connect a USB camera pointed at the UNI-T UT501A LCD, framing the main digits near the center of the image. Set `CAMERA_DEVICE` if the camera is not `/dev/video0` (default index `0`). The gateway waits for an Arduino test-start event, captures for 60 seconds, and queues the last stable LCD resistance reading. The LCD value is stored as `rawIR_GOhm`; a converted MΩ value is also included for compatibility. No temperature, voltage, or safety values are fabricated. Set `MOTOR_ID` to the matching motor key in Firebase, or include `motorId` in the Arduino event.
+
+When the Arduino starts each test, send this newline-delimited JSON event on the configured serial port:
+
+```json
+{"event":"test_started","motorId":"motor-001"}
+```
+
+`motorId` is optional if `MOTOR_ID` is set in the environment. The website's Logs page shows OCR readings and lets each user select Ω, kΩ, MΩ, GΩ, or TΩ; the selection is remembered in that browser.
+
+### Manual Arduino telemetry (`gatewayy.py`)
+
+Use the separate serial gateway to test direct Arduino values:
 
 ```bash
-SERIAL_PORT=/dev/ttyACM0 python3 gateway.py
+SERIAL_PORT=/dev/ttyACM0 python3 gatewayy.py
 ```
 
-Set `SERIAL_PORT` to the Arduino's actual device (for example `/dev/ttyUSB0`) and `BAUD_RATE` to match the Arduino sketch. The default baud rate is `9600`. If the Realtime Database requires an auth token, set `FIREBASE_AUTH_TOKEN` in the environment. `FIREBASE_DATABASE_URL` can also be set to the database's base URL.
+Set `SERIAL_PORT` to the Arduino's actual device (for example `/dev/ttyUSB0`) and `BAUD_RATE` to match the Arduino sketch. The default baud rate is `9600`. If the Realtime Database requires an auth token, set `FIREBASE_AUTH_TOKEN`; `FIREBASE_DATABASE_URL` can also be set to the database's base URL.
 
-The Arduino should send one JSON object followed by a newline for each completed test. Required values are:
+Send one JSON object followed by a newline for each completed manual test. Required values are:
 
 ```json
 {
@@ -32,21 +47,21 @@ The Arduino should send one JSON object followed by a newline for each completed
 }
 ```
 
-The two safety values must be JSON booleans. Optional fields are `employeeId`, `operatorName`, `minutes`, and the individual readings `raw_ab`, `raw_bc`, `raw_ca`, `raw_ag`, `raw_bg`, and `raw_cg`. The gateway records unsafe interlock responses too, marking them `SAFETY INTERLOCK FAILED`; it does not mark them as safe or discard them. It calculates temperature-corrected IR and the threshold, then writes records to `/live` and `/history`, which are the paths consumed by the website.
+The two safety values must be JSON booleans. Optional fields are `employeeId`, `operatorName`, `minutes`, and the individual readings `raw_ab`, `raw_bc`, `raw_ca`, `raw_ag`, `raw_bg`, and `raw_cg`. The gateway records unsafe interlock responses too, marking them `SAFETY INTERLOCK FAILED`; it does not mark them as safe or discard them. It calculates temperature-corrected IR and the threshold, then writes records to `/live` and `/history`, which are consumed by the website.
 
 ### Automatic startup in a monitorless box
 
-The gateway keeps retrying the serial connection if the Arduino is not ready yet or is unplugged, so it can start before the Arduino. To have it start automatically when the Pi boots, install the systemd service after installing the Python dependencies:
+The OCR gateway keeps retrying the serial connection if the Arduino is not ready yet or is unplugged, so it can start before the Arduino. To have it start automatically when the Pi boots, install the systemd service after installing the dependencies:
 
 ```bash
 sudo cp deploy/yuta-gateway.service /etc/systemd/system/yuta-gateway.service
 sudo nano /etc/systemd/system/yuta-gateway.service
 ```
 
-In the service file, replace `YOUR_PI_USERNAME` with the Pi login name. The example expects the repository at `/home/<username>/yuta` and the virtual environment at `/home/<username>/yuta/.venv`; update `WorkingDirectory` and `ExecStart` if yours differ. Set `SERIAL_PORT` to the Arduino's actual device. Add the Pi user to the `dialout` group if needed, then reboot or log out and back in:
+In the service file, replace `YOUR_PI_USERNAME` with the Pi login name. The example expects the repository at `/home/<username>/yuta` and the virtual environment at `/home/<username>/yuta/.venv`; update `WorkingDirectory` and `ExecStart` if yours differ. Set `SERIAL_PORT` to the Arduino's actual device, and configure `MOTOR_ID` in `/etc/yuta-gateway.env` if the Arduino event does not include it. Add the Pi user to both the `dialout` and `video` groups if needed, then reboot or log out and back in:
 
 ```bash
-sudo usermod -aG dialout YOUR_PI_USERNAME
+sudo usermod -aG dialout,video YOUR_PI_USERNAME
 sudo systemctl daemon-reload
 sudo systemctl enable --now yuta-gateway.service
 ```
@@ -58,7 +73,7 @@ systemctl status yuta-gateway.service
 journalctl -u yuta-gateway.service -f
 ```
 
-The optional `/etc/yuta-gateway.env` file can hold `FIREBASE_AUTH_TOKEN=...` if database authentication is required. Keep that file off the repository and restrict access to it. With the service enabled, the Pi can run headlessly: after power returns, systemd starts the gateway and it waits/retries for the Arduino. The Pi needs internet access when a reading is sent; if Firebase is unreachable during sync, the gateway reports the error but does not queue that record for later.
+The optional `/etc/yuta-gateway.env` file can hold `MOTOR_ID=...`, `CAMERA_DEVICE=0`, `FIREBASE_AUTH_TOKEN=...`, and `GATEWAY_QUEUE_PATH=...`. Keep that file off the repository and restrict access to it. With the service enabled, the Pi can run headlessly: after power returns, systemd starts the OCR gateway and waits for Arduino test-start events. The gateway retries queued readings as soon as Firebase becomes available.
 
 ## Web application
 
