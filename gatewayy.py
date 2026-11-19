@@ -1,13 +1,14 @@
-
 import json
 import math
 import os
 import re
 import time
+
 from datetime import datetime, timezone
 
 import requests
 import serial
+
 from serial import SerialException
 
 
@@ -29,7 +30,6 @@ SERIAL_TIMEOUT = 1
 RECONNECT_DELAY = 5
 
 
-# Six insulation resistance measurements
 IR_FIELDS = (
     "raw_ab",
     "raw_bc",
@@ -46,22 +46,26 @@ NUMERIC_FIELDS = IR_FIELDS + (
 
 
 # =====================================================
-# FIREBASE HELPERS
+# FIREBASE
 # =====================================================
 
 def firebase_params():
     if AUTH_TOKEN:
         return {"auth": AUTH_TOKEN}
+
     return None
 
 
 def get_motor_voltage(motor_data):
     """
-    Supports numeric voltage values such as 380
-    and text values such as '380 VAC'.
+    Dashboard uses rated_voltage.
+    Older records may use voltage.
     """
 
-    voltage = motor_data.get("voltage", 0)
+    voltage = motor_data.get(
+        "rated_voltage",
+        motor_data.get("voltage", 0)
+    )
 
     if isinstance(voltage, bool):
         return 0.0
@@ -69,7 +73,10 @@ def get_motor_voltage(motor_data):
     if isinstance(voltage, (int, float)):
         return float(voltage)
 
-    match = re.search(r"\d+(?:\.\d+)?", str(voltage))
+    match = re.search(
+        r"\d+(?:\.\d+)?",
+        str(voltage)
+    )
 
     if match:
         return float(match.group())
@@ -81,7 +88,7 @@ def fetch_motors(session):
     response = session.get(
         f"{FIREBASE_DATABASE_URL}/motors.json",
         params=firebase_params(),
-        timeout=10,
+        timeout=10
     )
 
     response.raise_for_status()
@@ -95,14 +102,6 @@ def fetch_motors(session):
 
 
 def send_motor_list(arduino, session):
-    """
-    Responds to Arduino LIST? request.
-
-    Format:
-    MOTOR|motorId|motorName|ratedVoltage
-    END
-    """
-
     print("Arduino requested motor list.")
 
     motors = fetch_motors(session)
@@ -115,8 +114,21 @@ def send_motor_list(arduino, session):
             continue
 
         motor_name = str(
-            motor_data.get("name", motor_id)
-        ).replace("|", " ").replace("\n", " ").replace("\r", " ")
+            motor_data.get(
+                "motor_name",
+                motor_data.get("name", motor_id)
+            )
+        )
+
+        # Prevent serial protocol delimiter conflicts.
+        motor_name = (
+            motor_name
+            .replace("|", " ")
+            .replace("\n", " ")
+            .replace("\r", " ")
+        )
+
+        motor_id = str(motor_id).replace("|", "_")
 
         rated_voltage = get_motor_voltage(motor_data)
 
@@ -128,18 +140,24 @@ def send_motor_list(arduino, session):
         arduino.write(message.encode("utf-8"))
         arduino.flush()
 
-        print(f"Sent motor: {motor_name} ({rated_voltage:g} V)")
+        print(
+            f"Sent motor: {motor_name} "
+            f"({rated_voltage:g} V)"
+        )
 
         sent_count += 1
 
     arduino.write(b"END\n")
     arduino.flush()
 
-    print(f"Motor list transmission completed: {sent_count} motor(s).")
+    print(
+        f"Motor list transmission completed: "
+        f"{sent_count} motor(s)."
+    )
 
 
 # =====================================================
-# TELEMETRY VALIDATION
+# VALIDATION
 # =====================================================
 
 def validate_numeric_fields(data):
@@ -153,15 +171,22 @@ def validate_numeric_fields(data):
         value = data[field]
 
         if isinstance(value, bool):
-            raise ValueError(f"{field} must be numeric")
+            raise ValueError(
+                f"{field} must be numeric."
+            )
 
         try:
             value = float(value)
+
         except (TypeError, ValueError):
-            raise ValueError(f"{field} must be numeric") from None
+            raise ValueError(
+                f"{field} must be numeric."
+            ) from None
 
         if not math.isfinite(value):
-            raise ValueError(f"{field} must be finite")
+            raise ValueError(
+                f"{field} must be finite."
+            )
 
         values[field] = value
 
@@ -169,8 +194,11 @@ def validate_numeric_fields(data):
 
 
 def build_log_record(data):
+
     if not isinstance(data, dict):
-        raise ValueError("Arduino message must be a JSON object")
+        raise ValueError(
+            "Arduino message must be a JSON object."
+        )
 
     required_fields = (
         "motorId",
@@ -180,30 +208,42 @@ def build_log_record(data):
     )
 
     missing = [
-        field for field in required_fields
+        field
+        for field in required_fields
         if field not in data
     ]
 
     if missing:
         raise ValueError(
-            "Missing required field(s): " + ", ".join(missing)
+            "Missing required fields: "
+            + ", ".join(missing)
         )
 
     motor_id = data["motorId"]
 
     if not isinstance(motor_id, str) or not motor_id.strip():
-        raise ValueError("motorId must be a non-empty string")
+        raise ValueError(
+            "motorId must be a non-empty string."
+        )
 
-    for field in ("ncAuxSafe", "zeroVoltageSafe"):
+    for field in (
+        "ncAuxSafe",
+        "zeroVoltageSafe"
+    ):
+
         if not isinstance(data[field], bool):
-            raise ValueError(f"{field} must be a JSON boolean")
+            raise ValueError(
+                f"{field} must be a JSON boolean."
+            )
 
     values = validate_numeric_fields(data)
 
     motor_voltage = values["motorVoltage"]
 
     if motor_voltage <= 0:
-        raise ValueError("motorVoltage must be greater than zero")
+        raise ValueError(
+            "motorVoltage must be greater than zero."
+        )
 
     safety_ok = (
         data["ncAuxSafe"]
@@ -214,58 +254,73 @@ def build_log_record(data):
         timezone.utc
     ).isoformat().replace("+00:00", "Z")
 
-    # -------------------------------------------------
-    # BASE RECORD
-    # -------------------------------------------------
-
     record = {
         "timestamp": timestamp,
+
         "motorId": motor_id.strip(),
-        "motorName": str(data.get("motorName", "Unknown Motor")),
+
+        "motorName": str(
+            data.get("motorName", "Unknown Motor")
+        ),
+
         "motorVoltage": motor_voltage,
         "ratedVoltage": motor_voltage,
+
         "ncAuxSafe": data["ncAuxSafe"],
         "zeroVoltageSafe": data["zeroVoltageSafe"],
         "safetyOK": safety_ok,
-        "employeeId": str(data.get("employeeId", "N/A")),
-        "operatorName": str(
-            data.get("operatorName", "Arduino Operator")
+
+        "employeeId": str(
+            data.get("employeeId", "N/A")
         ),
+
+        "operatorName": str(
+            data.get(
+                "operatorName",
+                "Arduino Operator"
+            )
+        ),
+
+        "dataSource": "ARDUINO_MANUAL_ENTRY",
+        "testMode": False,
     }
 
     # -------------------------------------------------
-    # SAFETY FAILURE RECORD
+    # SAFETY FAILURE
     # -------------------------------------------------
 
     if not safety_ok:
 
         record["status"] = "SAFETY INTERLOCK FAILED"
+
         record["message"] = (
-            "Insulation resistance test blocked because "
-            "safety verification failed."
+            "Insulation resistance testing was blocked "
+            "because safety verification failed."
         )
 
         return record
 
     # -------------------------------------------------
-    # VALIDATE COMPLETED MEASUREMENT RECORD
+    # MEASUREMENT VALIDATION
     # -------------------------------------------------
 
     missing_ir = [
-        field for field in IR_FIELDS
+        field
+        for field in IR_FIELDS
         if field not in values
     ]
 
     if missing_ir:
         raise ValueError(
-            "Missing IR measurement(s): " + ", ".join(missing_ir)
+            "Missing IR measurements: "
+            + ", ".join(missing_ir)
         )
 
     test_voltage = values.get("testVoltage")
 
     if test_voltage is None or test_voltage <= 0:
         raise ValueError(
-            "testVoltage must be greater than zero"
+            "testVoltage must be greater than zero."
         )
 
     readings = {}
@@ -276,7 +331,7 @@ def build_log_record(data):
 
         if reading < 0:
             raise ValueError(
-                f"{field} cannot be negative"
+                f"{field} cannot be negative."
             )
 
         readings[field] = reading
@@ -287,15 +342,15 @@ def build_log_record(data):
 
     minimum_ir = min(readings.values())
 
-    average_ir = sum(
-        readings.values()
-    ) / len(readings)
+    average_ir = (
+        sum(readings.values()) / len(readings)
+    )
 
-    # IEEE Std 43-2013 reference minimum:
+    # IEEE Std 43-2013 reference:
     # IRmin = kV + 1 MOhm
     #
-    # This is a reference threshold calculation.
-    # It does NOT apply temperature correction.
+    # This is a reference comparison only.
+    # No temperature correction is applied.
 
     threshold_ir = (
         motor_voltage / 1000.0
@@ -303,56 +358,106 @@ def build_log_record(data):
 
     if minimum_ir >= threshold_ir:
         status = "NORMAL"
+
     else:
         status = "MAINTENANCE ALERT"
 
     # -------------------------------------------------
-    # COMPLETED RECORD
+    # COMPLETE RECORD
     # -------------------------------------------------
 
     record.update({
+
         "testVoltage": test_voltage,
+
         "rawIR": minimum_ir,
+
         "minimumIR": minimum_ir,
-        "averageIR": round(average_ir, 3),
-        "thresholdIR": round(threshold_ir, 3),
+
+        "averageIR": round(
+            average_ir,
+            3
+        ),
+
+        "thresholdIR": round(
+            threshold_ir,
+            3
+        ),
+
         "status": status,
+
     })
 
     record.update(readings)
+
+    # Dashboard-friendly measurement names.
+    record.update({
+        "irL1L2": readings["raw_ab"],
+        "irL2L3": readings["raw_bc"],
+        "irL3L1": readings["raw_ca"],
+        "irL1G": readings["raw_ag"],
+        "irL2G": readings["raw_bg"],
+        "irL3G": readings["raw_cg"],
+    })
 
     return record
 
 
 # =====================================================
-# FIREBASE DATA SYNCHRONIZATION
+# FIREBASE SYNCHRONIZATION
 # =====================================================
 
 def sync_to_firebase(record, session):
 
     params = firebase_params()
 
-    # Update latest record
+    # Update latest telemetry.
     live_response = session.put(
         f"{FIREBASE_DATABASE_URL}/live.json",
         params=params,
         json=record,
-        timeout=10,
+        timeout=10
     )
 
     live_response.raise_for_status()
 
-    # Save historical record
+    # Add historical record.
     history_response = session.post(
         f"{FIREBASE_DATABASE_URL}/history.json",
         params=params,
         json=record,
-        timeout=10,
+        timeout=10
     )
 
     history_response.raise_for_status()
 
     return True
+
+
+# =====================================================
+# SERIAL ACKNOWLEDGEMENT
+# =====================================================
+
+def send_ack(arduino, success, message=""):
+
+    if success:
+        arduino.write(b"ACK|SAVED\n")
+
+    else:
+        safe_message = (
+            str(message)
+            .replace("|", " ")
+            .replace("\n", " ")
+            .replace("\r", " ")
+        )
+
+        response = f"ACK|ERROR|{safe_message}\n"
+
+        arduino.write(
+            response.encode("utf-8")
+        )
+
+    arduino.flush()
 
 
 # =====================================================
@@ -365,8 +470,9 @@ def run_gateway():
 
     print("======================================")
     print("       Y.U.T.A. RASPBERRY PI")
-    print("         SERIAL GATEWAY")
+    print("          SERIAL GATEWAY")
     print("======================================")
+
     print(f"Firebase: {FIREBASE_DATABASE_URL}")
     print(f"Serial port: {SERIAL_PORT}")
     print(f"Baud rate: {BAUD_RATE}")
@@ -385,14 +491,15 @@ def run_gateway():
                     timeout=SERIAL_TIMEOUT
                 ) as arduino:
 
+                    # Allow Arduino to reset after serial connection.
                     time.sleep(2)
 
                     print(
-                        f"Connected to Arduino on "
-                        f"{SERIAL_PORT} at {BAUD_RATE} baud"
+                        f"Connected to Arduino: "
+                        f"{SERIAL_PORT}"
                     )
 
-                    print("Waiting for Arduino commands...")
+                    print("Waiting for commands...")
                     print()
 
                     while True:
@@ -417,19 +524,19 @@ def run_gateway():
                         if line == "LIST?":
 
                             try:
+
                                 send_motor_list(
                                     arduino,
                                     session
                                 )
 
                             except requests.RequestException as error:
+
                                 print(
                                     "Firebase motor retrieval failed:",
                                     error
                                 )
 
-                                # Send END so Arduino does not
-                                # wait indefinitely for the list.
                                 arduino.write(b"END\n")
                                 arduino.flush()
 
@@ -440,9 +547,11 @@ def run_gateway():
                         # ---------------------------------
 
                         if not line.startswith("{"):
+
                             print(
                                 f"Ignoring Arduino output: {line}"
                             )
+
                             continue
 
                         try:
@@ -456,19 +565,30 @@ def run_gateway():
                                 session
                             )
 
+                            send_ack(
+                                arduino,
+                                True
+                            )
+
                             print()
-                            print("Firebase synchronization successful.")
+                            print(
+                                "Firebase synchronization successful."
+                            )
+
                             print(
                                 f"Motor: {record['motorName']}"
                             )
+
                             print(
                                 f"Status: {record['status']}"
                             )
+
                             print(
                                 f"Timestamp: {record['timestamp']}"
                             )
 
                             if "minimumIR" in record:
+
                                 print(
                                     f"Minimum IR: "
                                     f"{record['minimumIR']} MOhm"
@@ -476,20 +596,21 @@ def run_gateway():
 
                             print()
 
-                        except json.JSONDecodeError as error:
-                            print(
-                                f"Invalid JSON from Arduino: {error}"
-                            )
+                        except (
+                            json.JSONDecodeError,
+                            ValueError,
+                            requests.RequestException
+                        ) as error:
 
-                        except ValueError as error:
                             print(
-                                f"Invalid Arduino record: {error}"
-                            )
-
-                        except requests.RequestException as error:
-                            print(
-                                "Firebase synchronization failed:",
+                                "Record processing failed:",
                                 error
+                            )
+
+                            send_ack(
+                                arduino,
+                                False,
+                                str(error)
                             )
 
             except SerialException as error:
