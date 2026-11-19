@@ -11,17 +11,19 @@ python3 -m pip install -r requirements.txt
 sudo apt install tesseract-ocr
 ```
 
+Both modes implement the Arduino's two-way serial protocol. On `LIST?`, the Pi sends the Firebase motor assets as `MOTOR|id|name|ratedVoltage` lines followed by `END`. The most recently fetched list is cached in the SD-card database for offline startup. After a test result is safely written to the local outbox, the Pi returns `ACK|SAVED`; this confirms local persistence, not that Firebase is already online. The gateway later syncs the queued record automatically.
+
+### Arduino Mega sketch
+
+The connected sketch is [arduino/YUTA_Arduino.ino](./arduino/YUTA_Arduino.ino). Select **Arduino Mega 2560** at **9600 baud** and install the `Keypad` and `LiquidCrystal_I2C` libraries. It requests the motor list on startup, sends the OCR start/cancel events, and waits for the Pi's save acknowledgement. The LCD now reports that the record is saved on the Pi; cloud sync may still be pending.
+
 ### UT501A camera OCR (`gateway.py`)
 
 Connect a USB camera pointed at the UNI-T UT501A LCD, framing the main digits near the center of the image. Set `CAMERA_DEVICE` if the camera is not `/dev/video0` (default index `0`). The gateway waits for an Arduino test-start event, captures for 60 seconds, and queues the last stable LCD resistance reading. The LCD value is stored as `rawIR_GOhm`; a converted MΩ value is also included for compatibility. No temperature, voltage, or safety values are fabricated. Set `MOTOR_ID` to the matching motor key in Firebase, or include `motorId` in the Arduino event.
 
-When the Arduino starts each test, send this newline-delimited JSON event on the configured serial port:
+The Arduino sketch sends a newline-delimited `test_started` event after its initial safety check. After the test and final safety recheck, it sends the six manually entered line values. In OCR mode, those values are used to validate the completed test and are not stored; only the camera reading is stored for a safe test. A failed safety check is saved as a safety-only record. A cancelled test discards the pending OCR reading.
 
-```json
-{"event":"test_started","motorId":"motor-001"}
-```
-
-`motorId` is optional if `MOTOR_ID` is set in the environment. The website's Logs page shows OCR readings and lets each user select Ω, kΩ, MΩ, GΩ, or TΩ; the selection is remembered in that browser.
+The website's Logs page shows OCR readings and lets each user select Ω, kΩ, MΩ, GΩ, or TΩ; the selection is remembered in that browser.
 
 ### Manual Arduino telemetry (`gatewayy.py`)
 
@@ -33,21 +35,26 @@ SERIAL_PORT=/dev/ttyACM0 python3 gatewayy.py
 
 Set `SERIAL_PORT` to the Arduino's actual device (for example `/dev/ttyUSB0`) and `BAUD_RATE` to match the Arduino sketch. The default baud rate is `9600`. If the Realtime Database requires an auth token, set `FIREBASE_AUTH_TOKEN`; `FIREBASE_DATABASE_URL` can also be set to the database's base URL.
 
-Send one JSON object followed by a newline for each completed manual test. Required values are:
+`gatewayy.py` stores the Arduino sketch's manual six-line JSON readings. A normal test includes these fields:
 
 ```json
 {
   "motorId": "motor-001",
-  "rawIR": 2.4,
-  "temperatureC": 38.5,
-  "testVoltage": 1000,
+  "motorName": "WATER PUMP 01",
   "motorVoltage": 480,
+  "testVoltage": 1000,
   "ncAuxSafe": true,
-  "zeroVoltageSafe": true
+  "zeroVoltageSafe": true,
+  "raw_ab": 2.4,
+  "raw_bc": 2.42,
+  "raw_ca": 2.38,
+  "raw_ag": 2.25,
+  "raw_bg": 2.28,
+  "raw_cg": 2.2
 }
 ```
 
-The two safety values must be JSON booleans. Optional fields are `employeeId`, `operatorName`, `minutes`, and the individual readings `raw_ab`, `raw_bc`, `raw_ca`, `raw_ag`, `raw_bg`, and `raw_cg`. The gateway records unsafe interlock responses too, marking them `SAFETY INTERLOCK FAILED`; it does not mark them as safe or discard them. It calculates temperature-corrected IR and the threshold, then writes records to `/live` and `/history`, which are consumed by the website.
+The gateway derives `rawIR` from the lowest of the supplied line readings. `temperatureC` is optional; if omitted, no temperature correction is applied and the website leaves temperature blank. The two safety values must be JSON booleans. `employeeId` and `operatorName` are optional. Safety-failure messages are saved without inventing measurement values.
 
 ### Automatic startup in a monitorless box
 

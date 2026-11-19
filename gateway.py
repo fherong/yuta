@@ -43,9 +43,6 @@ NUMERIC_FIELDS = (
 )
 REQUIRED_FIELDS = (
     "motorId",
-    "rawIR",
-    "temperatureC",
-    "testVoltage",
     "motorVoltage",
     "ncAuxSafe",
     "zeroVoltageSafe",
@@ -83,49 +80,74 @@ def build_log_record(data, timestamp=None):
             raise ValueError(f"{field} must be a finite number")
         values[field] = value
 
-    if values["rawIR"] < 0 or values["temperatureC"] < -273.15:
-        raise ValueError("rawIR and temperatureC must be physically valid")
-    if values["testVoltage"] <= 0 or values["motorVoltage"] <= 0:
-        raise ValueError("testVoltage and motorVoltage must be greater than zero")
-
-    temperature = values["temperatureC"]
-    correction = (
-        0.5 ** ((temperature - 40.0) / 10.0)
-        if temperature >= 40.0
-        else 2.0 ** ((40.0 - temperature) / 10.0)
-    )
-    corrected_ir = round(values["rawIR"] * correction, 3)
-    threshold_ir = round(values["motorVoltage"] / 1000.0 + 1.0, 3)
-    if not math.isfinite(corrected_ir) or not math.isfinite(threshold_ir):
-        raise ValueError("calculated IR values must be finite")
     safety_ok = data["ncAuxSafe"] and data["zeroVoltageSafe"]
-
-    if not safety_ok:
-        status = "SAFETY INTERLOCK FAILED"
-    else:
-        status = "NORMAL" if corrected_ir >= threshold_ir else "MAINTENANCE ALERT"
+    if values["motorVoltage"] <= 0:
+        raise ValueError("motorVoltage must be greater than zero")
 
     record = {
         "timestamp": timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "motorId": motor_id.strip(),
-        "rawIR": values["rawIR"],
-        "temperatureC": temperature,
-        "testVoltage": values["testVoltage"],
         "motorVoltage": values["motorVoltage"],
         "ratedVoltage": values["motorVoltage"],
-        "correctedIR": corrected_ir,
-        "thresholdIR": threshold_ir,
         "ncAuxSafe": data["ncAuxSafe"],
         "zeroVoltageSafe": data["zeroVoltageSafe"],
         "safetyOK": safety_ok,
-        "status": status,
+        "source": "arduino",
         "employeeId": str(data.get("employeeId", "N/A")),
         "operatorName": str(data.get("operatorName", "Arduino Operator")),
     }
 
+    if "motorName" in data:
+        record["motorName"] = str(data["motorName"])
+
+    if not safety_ok:
+        record["measurementAvailable"] = False
+        record["status"] = "SAFETY INTERLOCK FAILED"
+        return record
+
+    if "testVoltage" not in values or values["testVoltage"] <= 0:
+        raise ValueError("testVoltage must be greater than zero")
+
+    line_fields = ("raw_ab", "raw_bc", "raw_ca", "raw_ag", "raw_bg", "raw_cg")
+    available_lines = [values[field] for field in line_fields if field in values]
+    if any(value < 0 for value in available_lines):
+        raise ValueError("IR measurements must be non-negative")
+    raw_ir = values.get("rawIR")
+    if raw_ir is None:
+        if not available_lines:
+            raise ValueError("At least one IR measurement is required")
+        raw_ir = min(available_lines)
+    if raw_ir < 0:
+        raise ValueError("rawIR must be physically valid")
+
+    temperature = values.get("temperatureC")
+    if temperature is not None and temperature < -273.15:
+        raise ValueError("temperatureC must be physically valid")
+    correction = 1.0
+    if temperature is not None:
+        correction = (
+            0.5 ** ((temperature - 40.0) / 10.0)
+            if temperature >= 40.0
+            else 2.0 ** ((40.0 - temperature) / 10.0)
+        )
+    corrected_ir = round(raw_ir * correction, 3)
+    threshold_ir = round(values["motorVoltage"] / 1000.0 + 1.0, 3)
+    if not math.isfinite(corrected_ir) or not math.isfinite(threshold_ir):
+        raise ValueError("calculated IR values must be finite")
+
+    record.update({
+        "measurementAvailable": True,
+        "rawIR": raw_ir,
+        "testVoltage": values["testVoltage"],
+        "correctedIR": corrected_ir,
+        "thresholdIR": threshold_ir,
+        "status": "NORMAL" if corrected_ir >= threshold_ir else "MAINTENANCE ALERT",
+    })
+    if temperature is not None:
+        record["temperatureC"] = temperature
     if "minutes" in values:
         record["minutes"] = values["minutes"]
-    for field in ("raw_ab", "raw_bc", "raw_ca", "raw_ag", "raw_bg", "raw_cg"):
+    for field in line_fields:
         if field in values:
             record[field] = values[field]
 
@@ -179,6 +201,14 @@ class DurableOutbox:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS gateway_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
 
     @contextmanager
     def _connect(self):
@@ -209,6 +239,92 @@ class DurableOutbox:
     def remove(self, record_id):
         with self._connect() as connection:
             connection.execute("DELETE FROM outbox WHERE record_id = ?", (record_id,))
+
+    def cache_motors(self, motors):
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO gateway_cache (cache_key, payload) VALUES ('motors', ?)
+                ON CONFLICT(cache_key) DO UPDATE SET payload = excluded.payload
+                """,
+                (json.dumps(motors, allow_nan=False),),
+            )
+
+    def cached_motors(self):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM gateway_cache WHERE cache_key = 'motors'"
+            ).fetchone()
+        return json.loads(row[0]) if row else []
+
+
+def _serial_write_line(arduino, line):
+    arduino.write((line + "\n").encode("utf-8"))
+
+
+def _normalize_motor_list(payload):
+    if payload is None:
+        return []
+    if not isinstance(payload, dict):
+        raise ValueError("Firebase motors value must be an object")
+
+    motors = []
+    for motor_id, item in payload.items():
+        if not isinstance(item, dict):
+            print(f"Ignoring malformed Firebase motor: {motor_id}")
+            continue
+        name = str(item.get("motor_name", "")).replace("|", " ").replace("\n", " ").strip()
+        motor_id = str(motor_id).replace("|", " ").replace("\n", " ").strip()
+        try:
+            voltage = float(item["rated_voltage"])
+        except (KeyError, TypeError, ValueError):
+            print(f"Ignoring Firebase motor without a valid rated voltage: {motor_id}")
+            continue
+        if not motor_id or not name or not math.isfinite(voltage) or voltage <= 0:
+            print(f"Ignoring malformed Firebase motor: {motor_id}")
+            continue
+        motors.append({"id": motor_id, "name": name, "ratedVoltage": voltage})
+    return motors
+
+
+def load_motor_list(session, auth_token, outbox, request_exception):
+    auth = {"auth": auth_token} if auth_token else None
+    try:
+        response = session.get(
+            f"{FIREBASE_DATABASE_URL}/motors.json",
+            params=auth,
+            timeout=10,
+        )
+        response.raise_for_status()
+        motors = _normalize_motor_list(response.json())
+    except request_exception as error:
+        print(f"Firebase motor list unavailable: {error}")
+        motors = outbox.cached_motors() if outbox is not None else []
+        if motors:
+            print(f"Serving {len(motors)} cached motor(s) to Arduino")
+        else:
+            print("No cached motors are available")
+        return motors
+
+    if outbox is not None:
+        outbox.cache_motors(motors)
+    return motors
+
+
+def send_motor_list(arduino, session, auth_token, outbox, request_exception):
+    motors = load_motor_list(session, auth_token, outbox, request_exception)
+    for motor in motors:
+        name = motor["name"].replace("\r", " ").replace("\n", " ").replace("|", " ")
+        motor_id = motor["id"].replace("\r", " ").replace("\n", " ").replace("|", " ")
+        _serial_write_line(
+            arduino,
+            f"MOTOR|{motor_id}|{name}|{motor['ratedVoltage']:.2f}",
+        )
+    _serial_write_line(arduino, "END")
+
+
+def acknowledge(arduino, saved):
+    _serial_write_line(arduino, "ACK|SAVED" if saved else "ACK|ERROR")
 
 
 def sync_outbox_once(outbox, session, auth_token, request_exception):
@@ -258,7 +374,14 @@ def _stop_sync_worker(wake, stop, worker):
     worker.join(timeout=2)
 
 
-def run_gateway(serial_module, request_exception, session, auth_token, outbox=None):
+def run_gateway(
+    serial_module,
+    request_exception,
+    session,
+    auth_token,
+    outbox=None,
+    motor_session=None,
+):
     sync_worker = (
         _start_sync_worker(outbox, session, auth_token, request_exception)
         if outbox is not None
@@ -277,12 +400,23 @@ def run_gateway(serial_module, request_exception, session, auth_token, outbox=No
                         line = arduino.readline().decode("utf-8", errors="replace").strip()
                         if not line:
                             continue
+                        if line == "LIST?":
+                            send_motor_list(
+                                arduino,
+                                motor_session or session,
+                                auth_token,
+                                outbox,
+                                request_exception,
+                            )
+                            continue
                         if not line.startswith("{"):
                             print(f"Ignoring Arduino output: {line}")
                             continue
 
                         try:
                             data = json.loads(line)
+                            if isinstance(data, dict) and "event" in data:
+                                continue
                             record = build_log_record(data)
                             if outbox is None:
                                 sync_to_firebase(record, session, auth_token)
@@ -297,10 +431,13 @@ def run_gateway(serial_module, request_exception, session, auth_token, outbox=No
                                     f"Saved motor {record['motorId']} to local outbox | "
                                     f"{record['status']} | {record['timestamp']}"
                                 )
+                            acknowledge(arduino, saved=True)
                         except (json.JSONDecodeError, ValueError) as error:
                             print(f"Invalid Arduino record: {error}")
+                            acknowledge(arduino, saved=False)
                         except request_exception as error:
                             print(f"Firebase sync failed; record was not confirmed: {error}")
+                            acknowledge(arduino, saved=False)
             except serial_module.SerialException as error:
                 print(
                     f"Arduino serial port {SERIAL_PORT} unavailable: {error}. "
@@ -425,9 +562,11 @@ def run_ocr_gateway(
     camera,
     image_to_text,
     motor_id=None,
+    motor_session=None,
 ):
     sync_worker = _start_sync_worker(outbox, session, auth_token, request_exception)
     configured_motor_id = motor_id or os.getenv("MOTOR_ID")
+    pending_capture = None
     try:
         while True:
             try:
@@ -440,31 +579,89 @@ def run_ocr_gateway(
                         line = arduino.readline().decode("utf-8", errors="replace").strip()
                         if not line:
                             continue
+                        if line == "LIST?":
+                            send_motor_list(
+                                arduino,
+                                motor_session or session,
+                                auth_token,
+                                outbox,
+                                request_exception,
+                            )
+                            continue
                         try:
                             message = json.loads(line)
                         except json.JSONDecodeError:
                             print(f"Ignoring Arduino output: {line}")
                             continue
-                        if not isinstance(message, dict) or message.get("event") != "test_started":
+                        if not isinstance(message, dict):
                             continue
 
-                        event_motor_id = message.get("motorId") or configured_motor_id
-                        if not isinstance(event_motor_id, str) or not event_motor_id.strip():
-                            print("Cannot start OCR capture: set MOTOR_ID or include motorId in the start event.")
+                        if message.get("event") == "test_cancelled":
+                            pending_capture = None
+                            print("OCR test cancelled by Arduino")
                             continue
 
-                        print(f"Test started for motor {event_motor_id}; capturing for {OCR_TEST_SECONDS} seconds...")
+                        if message.get("event") == "test_started":
+                            if pending_capture is not None:
+                                print("Ignoring test-start event while another test is awaiting completion.")
+                                continue
+
+                            event_motor_id = message.get("motorId") or configured_motor_id
+                            if not isinstance(event_motor_id, str) or not event_motor_id.strip():
+                                print("Cannot start OCR capture: set MOTOR_ID or include motorId in the start event.")
+                                pending_capture = {"error": "missing motorId"}
+                                continue
+
+                            print(f"Test started for motor {event_motor_id}; capturing for {OCR_TEST_SECONDS} seconds...")
+                            try:
+                                value_gohm = capture_last_stable_reading(camera, image_to_text)
+                                pending_capture = {
+                                    "motorId": event_motor_id.strip(),
+                                    "record": build_ocr_record(value_gohm, event_motor_id),
+                                }
+                                print(
+                                    f"Captured final stable UT501A reading: {value_gohm:g} GΩ; "
+                                    "waiting for Arduino test result."
+                                )
+                            except (RuntimeError, ValueError) as error:
+                                pending_capture = {
+                                    "motorId": event_motor_id.strip(),
+                                    "error": str(error),
+                                }
+                                print(f"OCR test capture failed: {error}")
+                            continue
+
                         try:
-                            value_gohm = capture_last_stable_reading(camera, image_to_text)
-                            record = build_ocr_record(value_gohm, event_motor_id)
+                            if message.get("ncAuxSafe") is False or message.get("zeroVoltageSafe") is False:
+                                record = build_log_record(message)
+                                outbox.enqueue(record)
+                                pending_capture = None
+                                sync_worker[0].set()
+                                acknowledge(arduino, saved=True)
+                                print(f"Saved safety failure for motor {record['motorId']} to local outbox")
+                                continue
+
+                            if pending_capture is None:
+                                raise ValueError("Arduino result arrived without a test-start OCR event")
+                            if "error" in pending_capture:
+                                raise ValueError(f"OCR capture unavailable: {pending_capture['error']}")
+                            if message.get("motorId") != pending_capture["motorId"]:
+                                raise ValueError("Arduino result motorId does not match the OCR test-start event")
+
+                            build_log_record(message)
+                            record = pending_capture["record"]
                             outbox.enqueue(record)
+                            pending_capture = None
                             sync_worker[0].set()
+                            acknowledge(arduino, saved=True)
                             print(
-                                f"Saved final stable UT501A reading: {value_gohm:g} GΩ "
-                                f"for motor {event_motor_id}"
+                                f"Saved UT501A reading for motor {record['motorId']} "
+                                f"to local outbox | {record['rawIR_GOhm']:g} GΩ"
                             )
-                        except (RuntimeError, ValueError) as error:
-                            print(f"OCR test capture failed: {error}")
+                        except (json.JSONDecodeError, ValueError) as error:
+                            pending_capture = None
+                            print(f"Arduino test result rejected: {error}")
+                            acknowledge(arduino, saved=False)
             except serial_module.SerialException as error:
                 print(
                     f"Arduino serial port {SERIAL_PORT} unavailable: {error}. "
@@ -483,8 +680,16 @@ def main_arduino():
 
     auth_token = os.getenv("FIREBASE_AUTH_TOKEN")
     session = requests.Session()
+    motor_session = requests.Session()
     outbox = DurableOutbox(QUEUE_PATH)
-    run_gateway(serial, requests.RequestException, session, auth_token, outbox)
+    run_gateway(
+        serial,
+        requests.RequestException,
+        session,
+        auth_token,
+        outbox,
+        motor_session,
+    )
 
 
 def main():
@@ -501,6 +706,7 @@ def main():
 
     try:
         session = requests.Session()
+        motor_session = requests.Session()
         outbox = DurableOutbox(QUEUE_PATH)
 
         def image_to_text(frame):
@@ -514,6 +720,7 @@ def main():
             outbox,
             camera,
             image_to_text,
+            motor_session=motor_session,
         )
     finally:
         camera.release()

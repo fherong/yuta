@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -9,8 +10,11 @@ from gateway import (
     build_ocr_record,
     build_log_record,
     capture_last_stable_reading,
+    load_motor_list,
     parse_ut501a_reading,
     run_gateway,
+    run_ocr_gateway,
+    send_motor_list,
     sync_to_firebase,
     sync_outbox_once,
 )
@@ -44,7 +48,69 @@ class BuildLogRecordTests(unittest.TestCase):
         record = build_log_record(self.message)
 
         self.assertFalse(record["safetyOK"])
+        self.assertFalse(record["measurementAvailable"])
         self.assertEqual(record["status"], "SAFETY INTERLOCK FAILED")
+        self.assertNotIn("rawIR", record)
+
+    def test_accepts_the_arduino_six_line_payload_without_temperature(self):
+        message = {
+            "motorId": "motor-001",
+            "motorName": "WATER PUMP 01",
+            "motorVoltage": 480,
+            "testVoltage": 1000,
+            "ncAuxSafe": True,
+            "zeroVoltageSafe": True,
+            "raw_ab": 2.4,
+            "raw_bc": 2.42,
+            "raw_ca": 2.38,
+            "raw_ag": 2.25,
+            "raw_bg": 2.28,
+            "raw_cg": 2.2,
+        }
+
+        record = build_log_record(message)
+
+        self.assertEqual(record["rawIR"], 2.2)
+        self.assertEqual(record["correctedIR"], 2.2)
+        self.assertNotIn("temperatureC", record)
+        self.assertTrue(record["measurementAvailable"])
+
+    def test_caches_motor_list_for_offline_arduino_requests(self):
+        class RequestException(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = DurableOutbox(f"{directory}/outbox.sqlite3")
+            online_session = Mock()
+            online_response = Mock()
+            online_response.json.return_value = {
+                "motor-001": {
+                    "motor_name": "WATER PUMP 01",
+                    "rated_voltage": 480,
+                }
+            }
+            online_session.get.return_value = online_response
+
+            motors = load_motor_list(online_session, None, outbox, RequestException)
+
+            self.assertEqual(motors, [{
+                "id": "motor-001",
+                "name": "WATER PUMP 01",
+                "ratedVoltage": 480.0,
+            }])
+
+            offline_session = Mock()
+            offline_session.get.side_effect = RequestException("offline")
+            arduino = Mock()
+            send_motor_list(arduino, offline_session, None, outbox, RequestException)
+
+            self.assertEqual(
+                [call.args[0] for call in arduino.write.call_args_list],
+                [
+                    b"MOTOR|motor-001|WATER PUMP 01|480.00\n",
+                    b"END\n",
+                ],
+            )
 
     def test_rejects_missing_required_values(self):
         del self.message["motorId"]
@@ -129,6 +195,107 @@ class BuildLogRecordTests(unittest.TestCase):
                 json=record,
                 timeout=10,
             )
+
+    def test_gateway_serves_motor_list_and_acknowledges_saved_arduino_record(self):
+        arduino_message = {
+            "motorId": "motor-001",
+            "motorName": "WATER PUMP 01",
+            "motorVoltage": 480,
+            "testVoltage": 1000,
+            "ncAuxSafe": True,
+            "zeroVoltageSafe": True,
+            "raw_ab": 2.4,
+            "raw_bc": 2.42,
+            "raw_ca": 2.38,
+            "raw_ag": 2.25,
+            "raw_bg": 2.28,
+            "raw_cg": 2.2,
+        }
+
+        arduino = Mock()
+        arduino.__enter__ = Mock(return_value=arduino)
+        arduino.__exit__ = Mock(return_value=False)
+        arduino.readline.side_effect = [
+            b"LIST?\n",
+            (json.dumps(arduino_message) + "\n").encode(),
+            KeyboardInterrupt,
+        ]
+        serial_module = SimpleNamespace(SerialException=Exception)
+        serial_module.Serial = Mock(return_value=arduino)
+        session = Mock()
+        motor_response = Mock()
+        motor_response.json.return_value = {
+            "motor-001": {
+                "motor_name": "WATER PUMP 01",
+                "rated_voltage": 480,
+            }
+        }
+        session.get.return_value = motor_response
+
+        with patch("gateway.time.sleep"):
+            run_gateway(serial_module, Exception, session, None)
+
+        self.assertEqual(
+            [call.args[0] for call in arduino.write.call_args_list],
+            [
+                b"MOTOR|motor-001|WATER PUMP 01|480.00\n",
+                b"END\n",
+                b"ACK|SAVED\n",
+            ],
+        )
+
+    def test_ocr_gateway_saves_only_the_captured_value_after_safe_result(self):
+        class RequestException(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = DurableOutbox(f"{directory}/outbox.sqlite3")
+            arduino = Mock()
+            arduino.__enter__ = Mock(return_value=arduino)
+            arduino.__exit__ = Mock(return_value=False)
+            arduino.readline.side_effect = [
+                b'{"event":"test_started","motorId":"motor-001"}\n',
+                (
+                    json.dumps({
+                        "motorId": "motor-001",
+                        "motorVoltage": 480,
+                        "testVoltage": 1000,
+                        "ncAuxSafe": True,
+                        "zeroVoltageSafe": True,
+                        "raw_ab": 2.4,
+                        "raw_bc": 2.42,
+                        "raw_ca": 2.38,
+                        "raw_ag": 2.25,
+                        "raw_bg": 2.28,
+                        "raw_cg": 2.2,
+                    }) + "\n"
+                ).encode(),
+                KeyboardInterrupt,
+            ]
+            serial_module = SimpleNamespace(SerialException=Exception)
+            serial_module.Serial = Mock(return_value=arduino)
+            session = Mock()
+            session.put.side_effect = RequestException("offline")
+
+            with patch("gateway.time.sleep"), patch(
+                "gateway.capture_last_stable_reading", return_value=1.25
+            ):
+                run_ocr_gateway(
+                    serial_module,
+                    RequestException,
+                    session,
+                    None,
+                    outbox,
+                    Mock(),
+                    lambda frame: "",
+                )
+
+            queued = outbox.oldest()
+            self.assertIsNotNone(queued)
+            self.assertEqual(queued[1]["source"], "ocr")
+            self.assertEqual(queued[1]["rawIR_GOhm"], 1.25)
+            self.assertNotIn("raw_ab", queued[1])
+            self.assertEqual(arduino.write.call_args.args[0], b"ACK|SAVED\n")
 
     def test_parses_ut501a_reading_as_gigaohms(self):
         self.assertEqual(parse_ut501a_reading(" 1.25 "), 1.25)

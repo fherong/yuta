@@ -164,15 +164,29 @@ export default function App() {
             };
           }
 
-          const rawAB = Number(item.raw_ab || item.rawIR || 2.40);
-          const rawBC = Number(item.raw_bc || item.rawIR || 2.42);
-          const rawCA = Number(item.raw_ca || item.rawIR || 2.38);
-          const rawAG = Number(item.raw_ag || item.rawIR || 2.25);
-          const rawBG = Number(item.raw_bg || item.rawIR || 2.28);
-          const rawCG = Number(item.raw_cg || item.rawIR || 2.20);
-          
-          const temp = Number(item.temperatureC || 38.5);
-          const kt = temp >= 40.0 ? Math.pow(0.5, (temp - 40.0) / 10.0) : Math.pow(2.0, (40.0 - temp) / 10.0);
+          if (item.measurementAvailable === false) {
+            return {
+              id: item.id || item.timestamp,
+              motor_id: item.motorId || 'unassigned',
+              source: 'safety',
+              nc_aux_safe: item.ncAuxSafe,
+              zero_voltage_safe: item.zeroVoltageSafe,
+              motor_status: item.status || 'SAFETY INTERLOCK FAILED',
+              formattedDate,
+            };
+          }
+
+          const rawAB = Number(item.raw_ab ?? item.rawIR ?? 2.40);
+          const rawBC = Number(item.raw_bc ?? item.rawIR ?? 2.42);
+          const rawCA = Number(item.raw_ca ?? item.rawIR ?? 2.38);
+          const rawAG = Number(item.raw_ag ?? item.rawIR ?? 2.25);
+          const rawBG = Number(item.raw_bg ?? item.rawIR ?? 2.28);
+          const rawCG = Number(item.raw_cg ?? item.rawIR ?? 2.20);
+
+          const temp = item.temperatureC == null ? null : Number(item.temperatureC);
+          const kt = temp == null ? 1 : temp >= 40.0
+            ? Math.pow(0.5, (temp - 40.0) / 10.0)
+            : Math.pow(2.0, (40.0 - temp) / 10.0);
 
           return {
             id: item.id || item.timestamp,
@@ -184,13 +198,15 @@ export default function App() {
             ag_corrected: Number((rawAG * kt).toFixed(2)),
             bg_corrected: Number((rawBG * kt).toFixed(2)),
             cg_corrected: Number((rawCG * kt).toFixed(2)),
-            raw_ir: Number((rawCG * kt).toFixed(2)),
+            raw_ir: Number(item.rawIR ?? rawCG),
             temperature: temp,
             test_voltage: Number(item.testVoltage || item.test_voltage || item.ratedVoltage || 1000),
             minutes: Number(item.minutes || 1.0),
             ir_min: Number(item.thresholdIR || 1.38),
             motor_status: item.status || 'NORMAL',
             operator_name: item.operatorName || 'Python Gateway OCR',
+            nc_aux_safe: item.ncAuxSafe,
+            zero_voltage_safe: item.zeroVoltageSafe,
             formattedDate
           };
         });
@@ -223,17 +239,30 @@ export default function App() {
   const filteredLogs = selectedMotor?.id === 'motor-mock'
     ? telemetryLogs
     : telemetryLogs.filter(l => l.motor_id === selectedMotor?.id);
-  const overviewLogs = filteredLogs.filter((log) => log.source !== 'ocr');
-  const latestOcr = filteredLogs.find((log) => log.source === 'ocr') ||
-    (liveTelemetry?.source === 'ocr' && liveTelemetry.motorId === selectedMotor?.id
-      ? {
-          raw_ir_gohm: Number(liveTelemetry.rawIR_GOhm ?? Number(liveTelemetry.rawIR) / 1000),
-        }
-      : null);
-  const liveOcrForSelected = liveTelemetry?.source === 'ocr' &&
-    liveTelemetry.motorId === selectedMotor?.id;
-  const hasOcrOnly = latestOcr != null &&
-    (filteredLogs[0]?.source === 'ocr' || (filteredLogs.length === 0 && liveOcrForSelected));
+  const overviewLogs = filteredLogs.filter(
+    (log) => log.source !== 'ocr' && log.source !== 'safety'
+  );
+  const liveRecordForSelected = selectedMotor?.id === 'motor-mock' ||
+    liveTelemetry?.motorId === selectedMotor?.id;
+  const liveOcrForSelected = liveTelemetry?.source === 'ocr' && liveRecordForSelected;
+  const liveSafetyForSelected = liveTelemetry?.measurementAvailable === false && liveRecordForSelected;
+  const latestOcr = liveOcrForSelected
+    ? {
+        raw_ir_gohm: Number(liveTelemetry.rawIR_GOhm ?? Number(liveTelemetry.rawIR) / 1000),
+      }
+    : filteredLogs.find((log) => log.source === 'ocr') || null;
+  const hasOcrOnly = liveOcrForSelected ||
+    (!liveSafetyForSelected && filteredLogs[0]?.source === 'ocr');
+  const hasSafetyOnly = liveSafetyForSelected ||
+    (!liveOcrForSelected && filteredLogs[0]?.source === 'safety');
+  const lastSafetyRecord = liveSafetyForSelected
+    ? {
+        nc_aux_safe: liveTelemetry.ncAuxSafe,
+        zero_voltage_safe: liveTelemetry.zeroVoltageSafe,
+      }
+    : filteredLogs.find(
+        (log) => log.nc_aux_safe != null || log.zero_voltage_safe != null
+      );
 
   // Filter dataset by test voltage safely with type casting
   const chartDataset = overviewLogs.filter(log => {
@@ -241,17 +270,20 @@ export default function App() {
     return Number(log.test_voltage) === Number(voltageFilter);
   });
 
-  const latest = (selectedMotor?.id === 'motor-mock' && liveTelemetry?.source !== 'ocr' && liveTelemetry) ? {
-    raw_ir: Number(liveTelemetry.rawIR || 2.20).toFixed(2),
-    ab_corrected: Number(liveTelemetry.raw_ab || 2.40).toFixed(2),
-    bc_corrected: Number(liveTelemetry.raw_bc || 2.42).toFixed(2),
-    ca_corrected: Number(liveTelemetry.raw_ca || 2.38).toFixed(2),
-    ag_corrected: Number(liveTelemetry.raw_ag || 2.25).toFixed(2),
-    bg_corrected: Number(liveTelemetry.raw_bg || 2.28).toFixed(2),
-    cg_corrected: Number(liveTelemetry.raw_cg || 2.20).toFixed(2),
-    temperature: Number(liveTelemetry.temperatureC || 38.5).toFixed(1),
-    test_voltage: Number(liveTelemetry.testVoltage || liveTelemetry.test_voltage || 1000),
-    minutes: Number(liveTelemetry.minutes || 1.0),
+  const latest = (selectedMotor?.id === 'motor-mock' &&
+    liveTelemetry?.source !== 'ocr' &&
+    liveTelemetry?.measurementAvailable !== false &&
+    liveTelemetry) ? {
+    raw_ir: Number(liveTelemetry.rawIR ?? 2.20).toFixed(2),
+    ab_corrected: Number(liveTelemetry.raw_ab ?? liveTelemetry.rawIR ?? 2.40).toFixed(2),
+    bc_corrected: Number(liveTelemetry.raw_bc ?? liveTelemetry.rawIR ?? 2.42).toFixed(2),
+    ca_corrected: Number(liveTelemetry.raw_ca ?? liveTelemetry.rawIR ?? 2.38).toFixed(2),
+    ag_corrected: Number(liveTelemetry.raw_ag ?? liveTelemetry.rawIR ?? 2.25).toFixed(2),
+    bg_corrected: Number(liveTelemetry.raw_bg ?? liveTelemetry.rawIR ?? 2.28).toFixed(2),
+    cg_corrected: Number(liveTelemetry.raw_cg ?? liveTelemetry.rawIR ?? 2.20).toFixed(2),
+    temperature: liveTelemetry.temperatureC == null ? null : Number(liveTelemetry.temperatureC).toFixed(1),
+    test_voltage: liveTelemetry.testVoltage ?? liveTelemetry.test_voltage ?? null,
+    minutes: liveTelemetry.minutes ?? null,
     motor_status: liveTelemetry.status || "NORMAL",
     formattedDate: liveTelemetry.timestamp ? new Date(liveTelemetry.timestamp).toLocaleTimeString() : "SYNCED"
   } : (overviewLogs.length > 0 ? overviewLogs[0] : {
@@ -269,8 +301,10 @@ export default function App() {
     formattedDate: "AWAITING TEST"
   });
 
-  const currentEval = hasOcrOnly ? { isSafe: null, ir40: null, irMin: null } : selectedMotor ? evaluateMotorStatus(
-    parseFloat(latest.cg_corrected || latest.raw_ir), 
+  const currentEval = hasOcrOnly || hasSafetyOnly
+    ? { isSafe: null, ir40: null, irMin: null }
+    : selectedMotor ? evaluateMotorStatus(
+    parseFloat(latest.raw_ir),
     parseFloat(latest.temperature), 
     selectedMotor.rated_voltage
   ) : { isSafe: true, ir40: 2.20, irMin: 1.38 };
@@ -512,11 +546,21 @@ export default function App() {
                   <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">EVALUATION</span>
                   <div className="mt-3">
                     <span className={`text-xl font-black ${hasOcrOnly ? 'text-purple-800' : currentEval.isSafe ? 'text-emerald-800' : 'text-rose-700'}`}>
-                      {hasOcrOnly ? 'OCR VALUE ONLY' : currentEval.isSafe ? 'NORMAL' : 'MAINT. REQ'}
+                      {hasOcrOnly
+                        ? 'OCR VALUE ONLY'
+                        : hasSafetyOnly
+                          ? 'SAFETY CHECK FAILED'
+                          : currentEval.isSafe
+                            ? 'NORMAL'
+                            : 'MAINT. REQ'}
                     </span>
                   </div>
                   <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">
-                    {hasOcrOnly ? 'NO TEMPERATURE OR VOLTAGE DATA' : 'IEEE STD 43-2013'}
+                    {hasOcrOnly
+                      ? 'NO TEMPERATURE OR VOLTAGE DATA'
+                      : hasSafetyOnly
+                        ? 'MEASUREMENTS NOT RECORDED'
+                        : 'IEEE STD 43-2013'}
                   </p>
                 </div>
 
@@ -529,15 +573,19 @@ export default function App() {
                   <div className="mt-2 space-y-1">
                     <div className="flex items-baseline justify-between">
                       <span className="text-[11px] font-bold text-[#57534e]">VOLTAGE:</span>
-                      <span className="text-base font-black text-purple-900">{hasOcrOnly || latest.test_voltage == null ? '—' : `${latest.test_voltage}V DC`}</span>
+                      <span className="text-base font-black text-purple-900">{hasOcrOnly || hasSafetyOnly || latest.test_voltage == null ? '—' : `${latest.test_voltage}V DC`}</span>
                     </div>
                     <div className="flex items-baseline justify-between">
                       <span className="text-[11px] font-bold text-[#57534e]">DURATION:</span>
-                      <span className="text-sm font-black text-purple-900">{hasOcrOnly || latest.minutes == null ? '—' : `${latest.minutes} MIN`}</span>
+                      <span className="text-sm font-black text-purple-900">{hasOcrOnly || hasSafetyOnly || latest.minutes == null ? '—' : `${latest.minutes} MIN`}</span>
                     </div>
                   </div>
                   <p className="text-[10px] font-bold text-purple-700 uppercase mt-2">
-                    {hasOcrOnly ? 'NOT CAPTURED BY OCR' : 'UT501A INJECTED'}
+                    {hasOcrOnly
+                      ? 'NOT CAPTURED BY OCR'
+                      : hasSafetyOnly
+                        ? 'NO TEST COMPLETED'
+                        : 'UT501A INJECTED'}
                   </p>
                 </div>
 
@@ -549,7 +597,7 @@ export default function App() {
                     <span className="text-xs text-purple-700 font-black">MΩ</span>
                   </div>
                   <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">
-                    {hasOcrOnly ? 'NO PHASE READINGS' : 'LOWEST OF 6 LINES'}
+                    {hasOcrOnly || hasSafetyOnly ? 'NO PHASE READINGS' : 'LOWEST OF 6 LINES'}
                   </p>
                 </div>
 
@@ -561,7 +609,7 @@ export default function App() {
                     <span className="text-xs font-black text-[#57534e]">MΩ</span>
                   </div>
                   <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">
-                    {hasOcrOnly ? 'NO VOLTAGE DATA' : 'kV + 1 THRESHOLD'}
+                    {hasOcrOnly || hasSafetyOnly ? 'NO VOLTAGE DATA' : 'kV + 1 THRESHOLD'}
                   </p>
                 </div>
 
@@ -569,11 +617,11 @@ export default function App() {
                 <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
                   <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">TEMP PROBE</span>
                   <div className="mt-2 flex items-baseline gap-1">
-                    <span className="text-3xl font-black tracking-tight">{hasOcrOnly ? '—' : latest.temperature ?? '—'}</span>
+                    <span className="text-3xl font-black tracking-tight">{hasOcrOnly || hasSafetyOnly ? '—' : latest.temperature ?? '—'}</span>
                     <span className="text-xs font-black text-[#57534e]">°C</span>
                   </div>
                   <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">
-                    {hasOcrOnly ? 'NOT CAPTURED BY OCR' : 'DS18B20 SENSOR'}
+                    {hasOcrOnly || hasSafetyOnly ? 'NOT CAPTURED' : 'DS18B20 SENSOR'}
                   </p>
                 </div>
               </div>
@@ -648,9 +696,11 @@ export default function App() {
                 </div>
 
                 <div className="h-80 w-full">
-                  {hasOcrOnly ? (
+                  {hasOcrOnly || hasSafetyOnly ? (
                     <div className="h-full flex items-center justify-center text-sm font-bold text-[#78716c]">
-                      UT501A readings are available in the Logs tab; no six-line readings were captured.
+                      {hasOcrOnly
+                        ? 'UT501A readings are available in the Logs tab; no six-line readings were captured.'
+                        : 'The safety check failed; no measurement was recorded.'}
                     </div>
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
@@ -821,7 +871,15 @@ export default function App() {
                               ? `${convertGOhm(log.raw_ir_gohm, resistanceUnit)} ${resistanceUnit}`
                               : '—'}
                           </td>
-                          <td className="p-3 font-bold text-emerald-800">{log.motor_status}</td>
+                          <td className={`p-3 font-bold ${
+                            log.source === 'safety' || log.motor_status === 'SAFETY INTERLOCK FAILED'
+                              ? 'text-rose-800'
+                              : log.source === 'ocr'
+                                ? 'text-purple-800'
+                                : log.motor_status === 'MAINTENANCE ALERT'
+                                  ? 'text-amber-800'
+                                  : 'text-emerald-800'
+                          }`}>{log.motor_status}</td>
                         </tr>
                       ))
                     )}
@@ -843,16 +901,30 @@ export default function App() {
                   <span className="text-xs uppercase font-bold text-[#57534e]">INTERLOCK 01</span>
                   <h3 className="text-sm font-black mt-1">NC AUXILIARY CONTACT</h3>
                   <p className="text-xs text-[#57534e] mt-2">Monitors contactor disconnect state to ensure zero backfeed potential.</p>
-                  <p className={`text-xs font-black mt-4 ${hasOcrOnly ? 'text-amber-800' : 'text-emerald-800'}`}>
-                    STATUS: {hasOcrOnly ? 'NOT PROVIDED BY OCR' : 'CONFIRMED DE-ENERGIZED'}
+                  <p className={`text-xs font-black mt-4 ${
+                    lastSafetyRecord?.nc_aux_safe === false ? 'text-rose-800' :
+                    lastSafetyRecord?.nc_aux_safe === true ? 'text-emerald-800' : 'text-amber-800'
+                  }`}>
+                    STATUS: {lastSafetyRecord?.nc_aux_safe === true
+                      ? 'CONFIRMED DE-ENERGIZED'
+                      : lastSafetyRecord?.nc_aux_safe === false
+                        ? 'FAILED'
+                        : hasOcrOnly ? 'NOT PROVIDED BY OCR' : 'NOT RECORDED'}
                   </p>
                 </div>
                 <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
                   <span className="text-xs uppercase font-bold text-[#57534e]">INTERLOCK 02</span>
                   <h3 className="text-sm font-black mt-1">ZMPT101B VOLTAGE SENSOR</h3>
                   <p className="text-xs text-[#57534e] mt-2">Galvanically isolated sensing verifying zero residual line voltage.</p>
-                  <p className={`text-xs font-black mt-4 ${hasOcrOnly ? 'text-amber-800' : 'text-emerald-800'}`}>
-                    STATUS: {hasOcrOnly ? 'NOT PROVIDED BY OCR' : '0.00 VAC (SAFE)'}
+                  <p className={`text-xs font-black mt-4 ${
+                    lastSafetyRecord?.zero_voltage_safe === false ? 'text-rose-800' :
+                    lastSafetyRecord?.zero_voltage_safe === true ? 'text-emerald-800' : 'text-amber-800'
+                  }`}>
+                    STATUS: {lastSafetyRecord?.zero_voltage_safe === true
+                      ? '0.00 VAC (SAFE)'
+                      : lastSafetyRecord?.zero_voltage_safe === false
+                        ? 'FAILED'
+                        : hasOcrOnly ? 'NOT PROVIDED BY OCR' : 'NOT RECORDED'}
                   </p>
                 </div>
               </div>

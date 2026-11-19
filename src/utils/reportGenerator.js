@@ -26,7 +26,9 @@ export function exportTelemetryToCSV(telemetryLogs, activeMotor) {
     `"${log.formattedDate || ""}"`,
     `"${activeMotor?.motor_name || "Motor"}"`,
     `"${activeMotor?.location || "Plant"}"`,
-    log.source === "ocr" ? "" : log.rated_voltage || activeMotor?.rated_voltage || 480,
+    log.source === "ocr" || log.source === "safety"
+      ? ""
+      : log.rated_voltage || activeMotor?.rated_voltage || 480,
     log.raw_ir ?? "",
     log.temperature ?? "",
     log.corrected_ir ?? "",
