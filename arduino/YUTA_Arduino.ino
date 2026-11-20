@@ -393,12 +393,29 @@ bool requestEmployeeList() {
   }
 
   if (!receivedEnd || unavailable || employeeCount == 0) {
-    showMessage(
-      unavailable ? "EMPLOYEE LIST ERROR" : "NO ELIGIBLE EMPLOYEES",
-      "Check Pi and Firebase",
-      "Press A to retry",
-      "Login required"
-    );
+    if (!receivedEnd) {
+      showMessage(
+        "PI NOT RESPONDING",
+        "Check gateway/cable",
+        "Check SERIAL_PORT",
+        "Press A to retry"
+      );
+    } else if (unavailable) {
+      showMessage(
+        "FIREBASE UNAVAILABLE",
+        "Check network/auth",
+        "Pi gateway connection",
+        "Press A to retry"
+      );
+    } else {
+      showMessage(
+        "NO ELIGIBLE STAFF",
+        "PIN must be 8-12",
+        "numeric digits only",
+        "Reset in website"
+      );
+    }
+
     delay(1500);
     return false;
   }
