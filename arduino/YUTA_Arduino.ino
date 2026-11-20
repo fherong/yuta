@@ -18,7 +18,7 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 #define SERIAL_BAUD 9600
 #define MAX_MOTORS 20
-#define MAX_EMPLOYEES 40
+#define MAX_EMPLOYEES 25
 
 struct Motor {
   char id[45];
