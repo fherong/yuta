@@ -13,6 +13,7 @@ from gateway import (
     capture_last_stable_reading,
     open_usb_camera,
     parse_ut501a_reading,
+    read_ut501a_frame,
     run_ocr_gateway,
 )
 from gatewayy import TelemetryQueue
@@ -50,11 +51,58 @@ class OCRReadingTests(unittest.TestCase):
         camera.release.assert_called_once_with()
 
     def test_parses_a_single_ut501a_reading(self):
-        self.assertEqual(parse_ut501a_reading(" 1,25 "), 1.25)
+        self.assertEqual(parse_ut501a_reading(" 1,25 GΩ "), 1.25)
         with self.assertRaisesRegex(ValueError, "exactly one"):
             parse_ut501a_reading("OL")
         with self.assertRaisesRegex(ValueError, "exactly one"):
-            parse_ut501a_reading("1.2 500")
+            parse_ut501a_reading("1.2 500 G")
+
+    def test_normalizes_milliohms_to_gigaohms_and_rejects_missing_units(self):
+        self.assertEqual(parse_ut501a_reading("110 MΩ"), 0.11)
+        self.assertEqual(parse_ut501a_reading("0.11 GΩ"), 0.11)
+        with self.assertRaisesRegex(ValueError, "MΩ or GΩ"):
+            parse_ut501a_reading("110")
+
+    def test_reads_the_numeric_value_and_unit_separately(self):
+        class Frame:
+            shape = (100, 120)
+
+        class Image:
+            width = 100
+            height = 60
+
+            def crop(self, _region):
+                return self
+
+            def convert(self, _mode):
+                return self
+
+            def resize(self, size, _resample):
+                self.width, self.height = size
+                return self
+
+            def point(self, _transform):
+                return self
+
+        image = Image()
+        pytesseract = Mock()
+        pytesseract.image_to_string.side_effect = ("110", "M")
+
+        with patch("PIL.Image.fromarray", return_value=image), patch(
+            "PIL.ImageOps.autocontrast",
+            side_effect=lambda value: value,
+        ):
+            text = read_ut501a_frame(Frame(), pytesseract)
+
+        self.assertEqual(text, "110 M")
+        self.assertIn(
+            "tessedit_char_whitelist=0123456789.,",
+            pytesseract.image_to_string.call_args_list[0].kwargs["config"],
+        )
+        self.assertIn(
+            "tessedit_char_whitelist=MG",
+            pytesseract.image_to_string.call_args_list[1].kwargs["config"],
+        )
 
     def test_builds_record_with_raw_gohm_and_mohm_values_for_status(self):
         data = {
@@ -132,7 +180,7 @@ class OCRReadingTests(unittest.TestCase):
                 return True, self.frame
 
         clock = Clock()
-        readings = iter(["1.0"] * 4 + ["2.0"] * 4)
+        readings = iter(["1.0 G"] * 4 + ["2.0 G"] * 4)
         preview_frames = []
         value = capture_last_stable_reading(
             Camera(),
@@ -166,7 +214,7 @@ class OCRReadingTests(unittest.TestCase):
                 return True, self.frame
 
         clock = Clock()
-        readings = iter(["1.0", "1.1"] * 4)
+        readings = iter(["1.0 G", "1.1 G"] * 4)
         with self.assertRaisesRegex(ValueError, "No stable"):
             capture_last_stable_reading(
                 Camera(),

@@ -25,6 +25,7 @@ OCR_FIELDS = (
     "raw_cg",
 )
 OCR_NUMBER_PATTERN = re.compile(r"(?<![\d.])(?:\d+(?:\.\d*)?|\.\d+)(?![\d.])")
+OCR_UNIT_PATTERN = re.compile(r"[MG]", re.IGNORECASE)
 
 
 def open_usb_camera(cv2_module, device=None):
@@ -52,11 +53,14 @@ def parse_ut501a_reading(text):
     matches = OCR_NUMBER_PATTERN.findall(text.replace(",", "."))
     if len(matches) != 1:
         raise ValueError("OCR did not identify exactly one resistance value")
+    units = OCR_UNIT_PATTERN.findall(text)
+    if len(units) != 1:
+        raise ValueError("OCR did not identify an MΩ or GΩ unit")
 
     value = float(matches[0])
     if not math.isfinite(value) or value < 0:
         raise ValueError("OCR resistance must be a finite non-negative number")
-    return value
+    return value / 1000 if units[0].upper() == "M" else value
 
 
 def read_ut501a_frame(frame, pytesseract_module):
@@ -80,10 +84,23 @@ def read_ut501a_frame(frame, pytesseract_module):
         Image.Resampling.LANCZOS,
     )
     processed = image.point(lambda pixel: 255 if pixel > 150 else 0)
-    return pytesseract_module.image_to_string(
+    number_text = pytesseract_module.image_to_string(
         processed,
         config="--psm 7 -c tessedit_char_whitelist=0123456789.,",
     )
+    unit_region = processed.crop(
+        (
+            int(processed.width * 0.80),
+            int(processed.height * 0.2),
+            int(processed.width * 0.92),
+            int(processed.height * 0.8),
+        )
+    )
+    unit_text = pytesseract_module.image_to_string(
+        unit_region,
+        config="--psm 10 -c tessedit_char_whitelist=MG",
+    )
+    return f"{number_text} {unit_text}"
 
 
 def capture_last_stable_reading(

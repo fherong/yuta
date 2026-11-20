@@ -37,9 +37,9 @@ Run the command from the Pi's desktop session to see the live preview while wait
 
 The sketch requests one camera capture for each of the six winding positions. Each capture lasts 60 seconds; four consecutive OCR samples must agree within 0.5%, and the latest stable sample in that window is kept. The LCD shows the captured GΩ value for review before the final safety check and save. If no stable value is found, the operator can retry that position or cancel the test.
 
-The OCR parser reads the UT501A's numeric display and treats it as GΩ, so use the tester's GΩ range for these captures.
+The OCR reads the numeric display separately from its MΩ/GΩ unit. MΩ readings are normalized to GΩ before saving, so the website and maintenance threshold receive consistent values. If the unit is not recognized, that sample is rejected rather than being interpreted at the wrong scale.
 
-OCR values are kept in `raw_ab_GOhm` through `raw_cg_GOhm` as read. Corresponding `raw_ab` through `raw_cg` values are stored in MΩ so the website can apply its existing `<5 MΩ` maintenance rule. The website displays the captured GΩ values. OCR does not invent temperature, status, or safety values.
+OCR values are normalized into `raw_ab_GOhm` through `raw_cg_GOhm`. Corresponding `raw_ab` through `raw_cg` values are stored in MΩ so the website can apply its existing `<5 MΩ` maintenance rule. The website displays the normalized GΩ values. OCR does not invent temperature, status, or safety values.
 
 ### Manual Arduino telemetry
 
