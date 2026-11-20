@@ -1,0 +1,139 @@
+import unittest
+from unittest.mock import Mock
+
+from gatewayy import (
+    authenticate_employee,
+    build_log_record,
+    eligible_employees,
+    employee_id_suffix,
+    send_employee_list,
+)
+
+
+class EmployeeProtocolTests(unittest.TestCase):
+    def test_lists_only_pinned_employee_accounts_in_name_order(self):
+        users = {
+            "EMP-2026-081": {
+                "fullname": "Zoe Tech",
+                "role": "Employee",
+                "pin": "48213679",
+            },
+            "EMP-2026-012": {
+                "fullname": "Max Tech",
+                "role": "Employee",
+                "pin": "123456789012",
+            },
+            "EMP-2026-014": {
+                "fullname": "Ari Tech",
+                "role": "Employee",
+                "pin": "12345678",
+            },
+            "ADM-2026-003": {
+                "fullname": "Site Admin",
+                "role": "Admin",
+                "pin": "5678",
+            },
+            "EMP-2026-099": {
+                "fullname": "No PIN",
+                "role": "Employee",
+            },
+            "EMP-2026-100": {
+                "fullname": "Text PIN",
+                "role": "Employee",
+                "pin": "abc",
+            },
+            "EMP-2026-101": {
+                "fullname": "Short PIN",
+                "role": "Employee",
+                "pin": "1234567",
+            },
+            "EMP-2026-102": {
+                "fullname": "Long PIN",
+                "role": "Employee",
+                "pin": "1234567890123",
+            },
+        }
+
+        self.assertEqual(
+            [employee["employeeId"] for employee in eligible_employees(users)],
+            ["EMP-2026-014", "EMP-2026-012", "EMP-2026-081"],
+        )
+        self.assertEqual(employee_id_suffix("EMP-2026-081"), "081")
+
+    def test_serial_employee_list_displays_suffix_but_never_pin(self):
+        response = Mock()
+        response.json.return_value = {
+            "EMP-2026-081": {
+                "fullname": "Ari Tech",
+                "role": "Employee",
+                "pin": "48213679",
+            }
+        }
+        session = Mock()
+        session.get.return_value = response
+        arduino = Mock()
+
+        send_employee_list(arduino, session)
+
+        output = b"".join(call.args[0] for call in arduino.write.call_args_list)
+        self.assertIn(b"EMPLOYEE|EMP-2026-081|Ari Tech|081\n", output)
+        self.assertIn(b"END\n", output)
+        self.assertNotIn(b"48213679", output)
+
+    def test_authenticates_current_employee_pin_and_rejects_other_roles(self):
+        response = Mock()
+        response.json.return_value = {"role": "Employee", "pin": "12345678"}
+        session = Mock()
+        session.get.return_value = response
+
+        self.assertTrue(authenticate_employee("EMP-2026-014", "12345678", session))
+        self.assertFalse(authenticate_employee("EMP-2026-014", "00000000", session))
+
+        response.json.return_value = {"role": "Admin", "pin": "12345678"}
+        self.assertFalse(authenticate_employee("ADM-2026-003", "12345678", session))
+
+    def test_rejects_non_numeric_pin_without_database_request(self):
+        session = Mock()
+
+        self.assertFalse(authenticate_employee("EMP-2026-014", "AB12", session))
+        session.get.assert_not_called()
+
+    def test_rejects_pin_lengths_outside_eight_to_twelve_digits(self):
+        session = Mock()
+
+        self.assertFalse(authenticate_employee("EMP-2026-014", "1234567", session))
+        self.assertFalse(authenticate_employee("EMP-2026-014", "1234567890123", session))
+        session.get.assert_not_called()
+
+    def test_authenticates_twelve_digit_pin(self):
+        response = Mock()
+        response.json.return_value = {"role": "Employee", "pin": "123456789012"}
+        session = Mock()
+        session.get.return_value = response
+
+        self.assertTrue(authenticate_employee("EMP-2026-012", "123456789012", session))
+
+    def test_test_record_keeps_authenticated_operator_identity(self):
+        record = build_log_record({
+            "motorId": "motor-001",
+            "motorName": "Pump 1",
+            "motorVoltage": 480,
+            "testVoltage": 1000,
+            "ncAuxSafe": True,
+            "zeroVoltageSafe": True,
+            "raw_ab": 2.4,
+            "raw_bc": 2.5,
+            "raw_ca": 2.6,
+            "raw_ag": 2.7,
+            "raw_bg": 2.8,
+            "raw_cg": 2.9,
+            "employeeId": "EMP-2026-014",
+            "operatorName": "Ari Tech",
+        })
+
+        self.assertEqual(record["employeeId"], "EMP-2026-014")
+        self.assertEqual(record["operatorName"], "Ari Tech")
+
+
+if __name__ == "__main__":
+    unittest.main()

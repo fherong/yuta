@@ -109,12 +109,17 @@ export async function logTestReading({ motorId, rawIR, temperature, ratedVoltage
 // --- EMPLOYEE ID-BASED USER MANAGEMENT ---
 export async function provisionUserWithId(employeeId, { fullname, role, pin }) {
   const cleanId = String(employeeId).trim();
+  const cleanPin = String(pin || "").trim();
+  if (!/^[0-9]{8,12}$/.test(cleanPin)) {
+    throw new Error("PIN must contain 8 to 12 digits for the Arduino keypad.");
+  }
+
   const userRef = ref(db, `users/${cleanId}`);
   await set(userRef, {
     employeeId: cleanId,
     fullname,
     role,
-    pin: pin || "1234",
+    pin: cleanPin,
     createdAt: new Date().toISOString()
   });
 }
@@ -130,6 +135,10 @@ export async function updateRegisteredUser(employeeId, { fullname, role, pin }) 
   }
 
   const cleanPin = typeof pin === "string" ? pin.trim() : "";
+  if (cleanPin && !/^[0-9]{8,12}$/.test(cleanPin)) {
+    throw new Error("PIN must contain 8 to 12 digits for the Arduino keypad.");
+  }
+
   const userRef = ref(db, `users/${cleanId}`);
   const result = await runTransaction(userRef, (currentUser) => {
     if (!currentUser || typeof currentUser !== "object") return;

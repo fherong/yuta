@@ -2,7 +2,7 @@
 
 ## Raspberry Pi Arduino gateway
 
-`gateway.py` runs on the Raspberry Pi, reads newline-delimited JSON from the Arduino, updates the website's live telemetry, and appends each accepted reading to its history logs.
+`gatewayy.py` runs on the Raspberry Pi for manual Arduino testing. It provides the motor list, employee login, and telemetry sync used by the keypad/LCD sketch.
 
 Install the Python dependencies on the Pi:
 
@@ -13,26 +13,18 @@ python3 -m pip install -r requirements.txt
 Connect the Arduino and run the gateway manually to test it:
 
 ```bash
-SERIAL_PORT=/dev/ttyACM0 python3 gateway.py
+SERIAL_PORT=/dev/ttyACM0 python3 gatewayy.py
 ```
 
 Set `SERIAL_PORT` to the Arduino's actual device (for example `/dev/ttyUSB0`) and `BAUD_RATE` to match the Arduino sketch. The default baud rate is `9600`. If the Realtime Database requires an auth token, set `FIREBASE_AUTH_TOKEN` in the environment. `FIREBASE_DATABASE_URL` can also be set to the database's base URL.
 
 The Arduino should send one JSON object followed by a newline for each completed test. Required values are:
 
-```json
-{
-  "motorId": "motor-001",
-  "rawIR": 2.4,
-  "temperatureC": 38.5,
-  "testVoltage": 1000,
-  "motorVoltage": 480,
-  "ncAuxSafe": true,
-  "zeroVoltageSafe": true
-}
-```
+For a completed safe test, the Arduino sends `motorId`, `motorName`, `motorVoltage`, `testVoltage`, the two boolean safety values, and all six readings (`raw_ab`, `raw_bc`, `raw_ca`, `raw_ag`, `raw_bg`, `raw_cg`). It also includes the employee ID and operator name from the LCD login. The gateway records unsafe interlock responses too, marking them `SAFETY INTERLOCK FAILED`; it does not mark them as safe or discard them. For safe tests, it calculates minimum and average IR readings and compares the minimum with the voltage-based threshold, then writes records to `/live` and `/history`, which are the paths consumed by the website.
 
-The two safety values must be JSON booleans. Optional fields are `employeeId`, `operatorName`, `minutes`, and the individual readings `raw_ab`, `raw_bc`, `raw_ca`, `raw_ag`, `raw_bg`, and `raw_cg`. The gateway records unsafe interlock responses too, marking them `SAFETY INTERLOCK FAILED`; it does not mark them as safe or discard them. It calculates temperature-corrected IR and the threshold, then writes records to `/live` and `/history`, which are the paths consumed by the website.
+### LCD employee login
+
+Upload [`arduino/YUTA_Arduino.ino`](arduino/YUTA_Arduino.ino) to the Arduino Mega. On startup, the tester requests employees with the `Employee` role and an 8-12 digit PIN from Realtime Database. The LCD shows each employee name with the last three numeric digits of their employee ID. The operator selects their name, enters the PIN on the keypad, and the Pi verifies it against the current account before enabling tests. PINs are not included in the employee list or gateway logs. A Firebase connection is required to log in; authentication fails closed if the Pi cannot verify the account. Existing accounts with shorter PINs must have their PIN reset in Settings before they can log in on the tester. Press `C` on the ready screen to switch operators. Each submitted record includes the authenticated employee ID and name.
 
 ### Automatic startup in a monitorless box
 

@@ -1,10 +1,12 @@
 import json
+import hmac
 import math
 import os
 import re
 import time
 
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import requests
 import serial
@@ -154,6 +156,99 @@ def send_motor_list(arduino, session):
         f"Motor list transmission completed: "
         f"{sent_count} motor(s)."
     )
+
+
+def eligible_employees(users):
+    if not isinstance(users, dict):
+        return []
+
+    employees = []
+    for employee_id, account in users.items():
+        if not isinstance(account, dict):
+            continue
+        if str(account.get("role", "")).strip().lower() != "employee":
+            continue
+
+        raw_name = account.get("fullname")
+        name = str(raw_name).strip() if raw_name is not None else ""
+        pin = account.get("pin")
+        if (
+            not employee_id
+            or not name
+            or isinstance(pin, bool)
+            or pin is None
+            or not re.fullmatch(r"[0-9]{8,12}", str(pin).strip())
+            or "|" in str(employee_id)
+        ):
+            continue
+
+        employees.append({
+            "employeeId": str(employee_id),
+            "fullname": name.replace("|", " ").replace("\n", " ").replace("\r", " "),
+        })
+
+    return sorted(employees, key=lambda employee: employee["fullname"].casefold())
+
+
+def employee_id_suffix(employee_id):
+    digits = re.sub(r"[^0-9]", "", str(employee_id))
+    return digits[-3:] if digits else "---"
+
+
+def fetch_eligible_employees(session):
+    response = session.get(
+        f"{FIREBASE_DATABASE_URL}/users.json",
+        params=firebase_params(),
+        timeout=10,
+    )
+    response.raise_for_status()
+    return eligible_employees(response.json())
+
+
+def send_employee_list(arduino, session):
+    print("Arduino requested eligible employee list.")
+    employees = fetch_eligible_employees(session)
+
+    for employee in employees:
+        employee_id = employee["employeeId"]
+        name = employee["fullname"]
+        suffix = employee_id_suffix(employee_id)
+        message = f"EMPLOYEE|{employee_id}|{name}|{suffix}\n"
+        arduino.write(message.encode("utf-8"))
+        arduino.flush()
+
+    arduino.write(b"END\n")
+    arduino.flush()
+    print(f"Employee list transmission completed: {len(employees)} employee(s).")
+    return len(employees)
+
+
+def authenticate_employee(employee_id, pin, session):
+    if not employee_id or not re.fullmatch(r"[0-9]{8,12}", str(pin)):
+        return False
+
+    response = session.get(
+        f"{FIREBASE_DATABASE_URL}/users/{quote(str(employee_id), safe='')}.json",
+        params=firebase_params(),
+        timeout=10,
+    )
+    response.raise_for_status()
+    account = response.json()
+
+    if not isinstance(account, dict):
+        return False
+    if str(account.get("role", "")).strip().lower() != "employee":
+        return False
+
+    stored_pin = account.get("pin")
+    if isinstance(stored_pin, bool) or stored_pin is None:
+        return False
+
+    clean_pin = str(stored_pin).strip()
+    if not re.fullmatch(r"[0-9]{8,12}", clean_pin):
+        return False
+
+    return hmac.compare_digest(clean_pin, str(pin))
 
 
 # =====================================================
@@ -540,6 +635,40 @@ def run_gateway():
                                 arduino.write(b"END\n")
                                 arduino.flush()
 
+                            continue
+
+                        # ---------------------------------
+                        # EMPLOYEE LOGIN
+                        # ---------------------------------
+
+                        if line == "EMPLOYEES?":
+
+                            try:
+                                send_employee_list(arduino, session)
+
+                            except requests.RequestException as error:
+                                print("Firebase employee retrieval failed:", error)
+                                arduino.write(b"EMPLOYEE_ERROR|UNAVAILABLE\nEND\n")
+                                arduino.flush()
+
+                            continue
+
+                        if line.startswith("LOGIN|"):
+                            parts = line.split("|", 2)
+                            authenticated = False
+
+                            if len(parts) == 3:
+                                try:
+                                    authenticated = authenticate_employee(
+                                        parts[1],
+                                        parts[2],
+                                        session,
+                                    )
+                                except requests.RequestException as error:
+                                    print("Employee authentication failed: Firebase unavailable.", error)
+
+                            arduino.write(b"LOGIN|OK\n" if authenticated else b"LOGIN|ERROR\n")
+                            arduino.flush()
                             continue
 
                         # ---------------------------------

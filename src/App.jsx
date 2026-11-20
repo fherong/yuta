@@ -127,7 +127,7 @@ export default function App() {
 
   const [newEmpId, setNewEmpId] = useState('');
   const [newFullname, setNewFullname] = useState('');
-  const [newPin, setNewPin] = useState('1234');
+  const [newPin, setNewPin] = useState('');
   const [newRole, setNewRole] = useState('Employee');
   const [editingUserId, setEditingUserId] = useState(null);
   const [userFormError, setUserFormError] = useState('');
@@ -367,7 +367,7 @@ export default function App() {
       setEditingUserId(null);
       setNewEmpId('');
       setNewFullname('');
-      setNewPin('1234');
+      setNewPin('');
       setNewRole('Employee');
       if (isEditing) {
         setRegisteredUsers((users) => users.map((user) => (
@@ -400,7 +400,7 @@ export default function App() {
     setEditingUserId(null);
     setNewEmpId('');
     setNewFullname('');
-    setNewPin('1234');
+    setNewPin('');
     setNewRole('Employee');
     setUserFormError('');
   };
@@ -1041,17 +1041,22 @@ export default function App() {
                     </div>
                     <div>
                       <label className="text-xs font-bold text-[#44403c] block mb-1">
-                        {editingUserId ? 'NEW PIN / PASSWORD' : 'DEFAULT PIN'}
+                        {editingUserId ? 'NEW PIN (OPTIONAL)' : 'DEFAULT PIN'}
                       </label>
                       <input
                         type="password"
                         required={!editingUserId}
                         autoComplete="new-password"
+                        inputMode="numeric"
+                        pattern="[0-9]{8,12}"
+                        minLength={8}
+                        maxLength={12}
                         value={newPin}
-                        onChange={e => setNewPin(e.target.value)}
+                        onChange={e => setNewPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 12))}
                         placeholder={editingUserId ? 'Leave blank to keep current PIN' : ''}
                         className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
                       />
+                      <p className="mt-1 text-[10px] text-[#78716c]">Use 8-12 digits; letters and symbols are not allowed.</p>
                     </div>
                     <div>
                       <label className="text-xs font-bold text-[#44403c] block mb-1">ROLE</label>

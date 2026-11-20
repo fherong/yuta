@@ -1,5 +1,5 @@
 [Unit]
-Description=YUTA Arduino telemetry gateway
+Description=YUTA Arduino tester gateway
 Wants=network-online.target
 After=network-online.target
 
@@ -11,7 +11,7 @@ WorkingDirectory=%h/yuta
 Environment=SERIAL_PORT=/dev/ttyACM0
 Environment=BAUD_RATE=9600
 EnvironmentFile=-/etc/yuta-gateway.env
-ExecStart=%h/yuta/.venv/bin/python %h/yuta/gateway.py
+ExecStart=%h/yuta/.venv/bin/python %h/yuta/gatewayy.py
 Restart=always
 RestartSec=5
 
