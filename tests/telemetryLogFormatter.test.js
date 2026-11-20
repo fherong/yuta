@@ -48,7 +48,7 @@ test("does not fill missing Arduino readings with sample values", () => {
   assert.equal(record.motor_status, "NOT PROVIDED");
 });
 
-test("shows normal status when the minimum raw reading meets the previous threshold", () => {
+test("shows normal status when every raw reading is at least 5 MOhm", () => {
   const record = formatTelemetryLog({
     motorId: "motor-001",
     motorVoltage: 480,
@@ -56,16 +56,35 @@ test("shows normal status when the minimum raw reading meets the previous thresh
     operatorName: "Ari Tech",
     ncAuxSafe: true,
     zeroVoltageSafe: true,
-    raw_ab: 2.4,
-    raw_bc: 2.5,
-    raw_ca: 2.6,
-    raw_ag: 2.7,
-    raw_bg: 2.8,
-    raw_cg: 2.9,
+    raw_ab: 5,
+    raw_bc: 5.1,
+    raw_ca: 5.2,
+    raw_ag: 5.3,
+    raw_bg: 5.4,
+    raw_cg: 5.5,
   });
 
   assert.equal(record.motor_status, "NORMAL");
-  assert.equal(record.ab_corrected, 2.4);
+  assert.equal(record.ab_corrected, 5);
+});
+
+test("shows maintenance when any raw reading is below 5 MOhm", () => {
+  const record = formatTelemetryLog({
+    motorId: "motor-001",
+    employeeId: "EMP-2026-014",
+    operatorName: "Ari Tech",
+    ncAuxSafe: true,
+    zeroVoltageSafe: true,
+    raw_ab: 6,
+    raw_bc: 6,
+    raw_ca: 4.99,
+    raw_ag: 6,
+    raw_bg: 6,
+    raw_cg: 6,
+  });
+
+  assert.equal(record.motor_status, "MAINTENANCE ALERT");
+  assert.equal(record.ca_corrected, 4.99);
 });
 
 test("reports a failed safety interlock without requiring measurements", () => {

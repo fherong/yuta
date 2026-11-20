@@ -1,5 +1,7 @@
 import { getEmployeeId } from "./employeeId.js";
 
+const MINIMUM_NORMAL_IR_MOHMS = 5;
+
 function getArduinoManualStatus(item) {
   if (item.ncAuxSafe === false || item.zeroVoltageSafe === false) {
     return "SAFETY INTERLOCK FAILED";
@@ -8,12 +10,7 @@ function getArduinoManualStatus(item) {
     return "NOT PROVIDED";
   }
 
-  const motorVoltage = Number(item.motorVoltage);
   const readingFields = ["raw_ab", "raw_bc", "raw_ca", "raw_ag", "raw_bg", "raw_cg"];
-  if (!Number.isFinite(motorVoltage) || motorVoltage <= 0) {
-    return "NOT PROVIDED";
-  }
-
   const readings = readingFields.map((field) => item[field]);
   if (readings.some((reading) => reading === undefined || reading === null || reading === "")) {
     return "NOT PROVIDED";
@@ -24,8 +21,9 @@ function getArduinoManualStatus(item) {
     return "NOT PROVIDED";
   }
 
-  const threshold = motorVoltage / 1000 + 1;
-  return Math.min(...numericReadings) >= threshold ? "NORMAL" : "MAINTENANCE ALERT";
+  return numericReadings.some((reading) => reading < MINIMUM_NORMAL_IR_MOHMS)
+    ? "MAINTENANCE ALERT"
+    : "NORMAL";
 }
 
 export function formatTelemetryLog(item) {
