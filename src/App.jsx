@@ -147,6 +147,15 @@ export default function App() {
       const historyData = await fetchTelemetryHistory();
       if (historyData && historyData.length > 0) {
         const formatted = historyData.map((item) => {
+          const testDate = item.timestamp
+            ? new Date(item.timestamp).toLocaleString([], {
+                year: 'numeric',
+                month: 'short',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+              })
+            : 'LIVE';
           const formattedDate = item.timestamp
             ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
             : 'LIVE';
@@ -160,6 +169,7 @@ export default function App() {
               raw_ir_gohm: Number.isFinite(valueGOhm) ? valueGOhm : null,
               raw_ir: Number.isFinite(valueGOhm) ? valueGOhm * 1000 : null,
               motor_status: item.status || 'OCR READING',
+              testDate,
               formattedDate,
             };
           }
@@ -172,6 +182,7 @@ export default function App() {
               nc_aux_safe: item.ncAuxSafe,
               zero_voltage_safe: item.zeroVoltageSafe,
               motor_status: item.status || 'SAFETY INTERLOCK FAILED',
+              testDate,
               formattedDate,
             };
           }
@@ -207,6 +218,7 @@ export default function App() {
             operator_name: item.operatorName || 'Python Gateway OCR',
             nc_aux_safe: item.ncAuxSafe,
             zero_voltage_safe: item.zeroVoltageSafe,
+            testDate,
             formattedDate
           };
         });
@@ -836,7 +848,7 @@ export default function App() {
                 <table className="w-full text-left text-xs">
                   <thead className="bg-[#f3eee6] border-b-2 border-[#e2d8cd] uppercase text-[#44403c]">
                     <tr>
-                      <th className="p-3">Timestamp</th>
+                      <th className="p-3">Test Date</th>
                       <th className="p-3">Volts</th>
                       <th className="p-3">Duration</th>
                       <th className="p-3">A-B</th>
@@ -845,18 +857,17 @@ export default function App() {
                       <th className="p-3">A-G</th>
                       <th className="p-3">B-G</th>
                       <th className="p-3">C-G</th>
-                      <th className="p-3">Temp</th>
                       <th className="p-3">OCR Reading</th>
                       <th className="p-3">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#e2d8cd]">
                     {filteredLogs.length === 0 ? (
-                      <tr><td colSpan="12" className="p-6 text-center text-[#78716c]">No historical logs for this station yet.</td></tr>
+                      <tr><td colSpan="11" className="p-6 text-center text-[#78716c]">No historical logs for this station yet.</td></tr>
                     ) : (
                       filteredLogs.map((log) => (
                         <tr key={log.id}>
-                          <td className="p-3 text-[#57534e]">{log.formattedDate}</td>
+                          <td className="p-3 text-[#57534e]">{log.testDate}</td>
                           <td className="p-3 font-bold text-purple-900">{log.test_voltage == null ? '—' : `${log.test_voltage}V`}</td>
                           <td className="p-3">{log.minutes == null ? '—' : `${log.minutes} min`}</td>
                           <td className="p-3">{log.ab_corrected == null ? '—' : `${log.ab_corrected} MΩ`}</td>
@@ -865,7 +876,6 @@ export default function App() {
                           <td className="p-3">{log.ag_corrected == null ? '—' : `${log.ag_corrected} MΩ`}</td>
                           <td className="p-3">{log.bg_corrected == null ? '—' : `${log.bg_corrected} MΩ`}</td>
                           <td className="p-3">{log.cg_corrected == null ? '—' : `${log.cg_corrected} MΩ`}</td>
-                          <td className="p-3">{log.temperature == null ? '—' : `${log.temperature} °C`}</td>
                           <td className="p-3 font-bold">
                             {log.source === 'ocr' && log.raw_ir_gohm != null
                               ? `${convertGOhm(log.raw_ir_gohm, resistanceUnit)} ${resistanceUnit}`
