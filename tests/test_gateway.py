@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from gateway import (
     OCR_FIELDS,
+    _save_record,
     _handle_capture_event,
     build_ocr_test_record,
     capture_last_stable_reading,
@@ -179,6 +180,23 @@ class OCRReadingTests(unittest.TestCase):
 
 
 class OCRSerialFlowTests(unittest.TestCase):
+    def test_acknowledges_local_queue_before_attempting_cloud_sync(self):
+        events = []
+        arduino = Mock()
+        arduino.write.side_effect = lambda message: events.append("ack")
+        queue = Mock()
+        queue.enqueue.return_value = "record-001"
+
+        with patch(
+            "gateway.gatewayy.retry_pending_records",
+            side_effect=lambda *args: events.append("sync"),
+        ):
+            record_id = _save_record(arduino, {"motorId": "motor-001"}, queue, Mock())
+
+        self.assertEqual(record_id, "record-001")
+        self.assertEqual(events, ["ack", "sync"])
+        arduino.write.assert_called_once_with(b"ACK|QUEUED\n")
+
     def test_preview_keeps_refreshing_and_reassembles_partial_serial_lines(self):
         arduino = Mock()
         arduino.__enter__ = Mock(return_value=arduino)
@@ -262,7 +280,7 @@ class OCRSerialFlowTests(unittest.TestCase):
             for index, field in enumerate(OCR_FIELDS):
                 value = captures[field]
                 self.assertIn(f"OCR_RESULT|{index}|{value:.6f}\n".encode(), responses)
-            self.assertIn(b"ACK|SAVED\n", responses)
+            self.assertIn(b"ACK|QUEUED\n", responses)
 
             history_payload = session.put.call_args_list[-1].kwargs["json"]
             for field, value in captures.items():

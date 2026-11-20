@@ -235,9 +235,8 @@ def _write_capture_result(arduino, index, value=None):
 
 def _save_record(arduino, record, queue, session):
     record_id = queue.enqueue(record)
+    gatewayy.send_ack(arduino, "QUEUED")
     gatewayy.retry_pending_records(queue, session)
-    status = "QUEUED" if queue.contains(record_id) else "SAVED"
-    gatewayy.send_ack(arduino, status)
     return record_id
 
 
