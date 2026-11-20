@@ -4,7 +4,6 @@ import { Login } from './components/Login';
 import { evaluateMotorStatus, IEEE_VOLTAGE_THRESHOLDS } from './utils/ieeeStandards';
 import { 
   subscribeToMotors,
-  logTestReading, 
   createMotorAsset,
   archiveMotorAsset,
   archiveRegisteredUser,
@@ -104,22 +103,6 @@ export default function App() {
   // Filter States
   const [lineFilterGroup, setLineFilterGroup] = useState('ALL'); // ALL, PHASE_TO_PHASE, PHASE_TO_GROUND
   const [voltageFilter, setVoltageFilter] = useState('ALL'); // ALL, 100, 250, 500, 1000
-
-  // 6-Line Simulation Form Inputs
-  const [simAB, setSimAB] = useState(2.40);
-  const [simBC, setSimBC] = useState(2.42);
-  const [simCA, setSimCA] = useState(2.38);
-  const [simAG, setSimAG] = useState(2.25);
-  const [simBG, setSimBG] = useState(2.28);
-  const [simCG, setSimCG] = useState(2.20);
-  
-  const [simTemp, setSimTemp] = useState(38.5);
-  const [simTestVoltage, setSimTestVoltage] = useState(1000);
-  const [simMinutes, setSimMinutes] = useState(1.0);
-  const [simNcAux, setSimNcAux] = useState(true);
-  const [simZeroVolt, setSimZeroVolt] = useState(true);
-  const [isExecutingTest, setIsExecutingTest] = useState(false);
-  const [testExecutionError, setTestExecutionError] = useState('');
 
   // Modals & User Management
   const [showAddMotorModal, setShowAddMotorModal] = useState(false);
@@ -270,40 +253,6 @@ export default function App() {
     parseFloat(latest.temperature), 
     selectedMotor.rated_voltage
   ) : { isSafe: true, ir40: 2.20, irMin: 1.38 };
-
-  const handleExecuteAutomatedTest = async (e) => {
-    e.preventDefault();
-    if (!selectedMotor) return;
-    setTestExecutionError('');
-    setIsExecutingTest(true);
-
-    try {
-      await logTestReading({
-        motorId: selectedMotor.id,
-        raw_ab: Number(simAB),
-        raw_bc: Number(simBC),
-        raw_ca: Number(simCA),
-        raw_ag: Number(simAG),
-        raw_bg: Number(simBG),
-        raw_cg: Number(simCG),
-        rawIR: Number(simCG),
-        temperature: Number(simTemp),
-        testVoltage: Number(simTestVoltage),
-        minutes: Number(simMinutes),
-        ratedVoltage: selectedMotor.rated_voltage,
-        employeeId: currentUser.employeeId || currentUser.uid,
-        operatorName: currentUser.fullname || currentUser.email,
-        ncAuxSafe: simNcAux,
-        zeroVoltageSafe: simZeroVolt
-      });
-      const updatedHistory = await fetchTelemetryHistory();
-      setTelemetryLogs(updatedHistory);
-    } catch (err) {
-      setTestExecutionError(err.message);
-    } finally {
-      setIsExecutingTest(false);
-    }
-  };
 
   const handleProvisionEmployee = async (e) => {
     e.preventDefault();
@@ -764,74 +713,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 6-Line Test Injection Module */}
-              <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee]">
-                <h3 className="text-sm font-black tracking-[0.2em] uppercase mb-4">INJECT 6-LINE TEST READINGS</h3>
-                {testExecutionError && <div className="p-3 mb-4 bg-rose-100 border border-rose-300 text-rose-800 text-xs font-bold">{testExecutionError}</div>}
-                
-                <form onSubmit={handleExecuteAutomatedTest} className="space-y-4">
-                  
-                  <div className="border border-[#cbd5e1] p-3 bg-white space-y-3">
-                    <span className="text-[11px] font-black text-purple-900 uppercase block">PHASE-TO-PHASE READINGS (MΩ)</span>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                      <div>
-                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">A-B PHASE</label>
-                        <input type="number" step="0.01" value={simAB} onChange={e => setSimAB(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">B-C PHASE</label>
-                        <input type="number" step="0.01" value={simBC} onChange={e => setSimBC(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">C-A PHASE</label>
-                        <input type="number" step="0.01" value={simCA} onChange={e => setSimCA(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="border border-[#cbd5e1] p-3 bg-white space-y-3">
-                    <span className="text-[11px] font-black text-amber-900 uppercase block">PHASE-TO-GROUND READINGS (MΩ)</span>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                      <div>
-                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">A-G GROUND</label>
-                        <input type="number" step="0.01" value={simAG} onChange={e => setSimAG(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">B-G GROUND</label>
-                        <input type="number" step="0.01" value={simBG} onChange={e => setSimBG(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-[#44403c] block mb-1">C-G GROUND</label>
-                        <input type="number" step="0.01" value={simCG} onChange={e => setSimCG(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
-                    <div>
-                      <label className="text-[11px] font-bold text-[#44403c] block mb-1">TEST VOLTS</label>
-                      <select value={simTestVoltage} onChange={e => setSimTestVoltage(Number(e.target.value))} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold">
-                        <option value={100}>100V DC</option>
-                        <option value={250}>250V DC</option>
-                        <option value={500}>500V DC</option>
-                        <option value={1000}>1000V DC</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-bold text-[#44403c] block mb-1">DURATION (MIN)</label>
-                      <input type="number" step="0.5" value={simMinutes} onChange={e => setSimMinutes(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-bold text-[#44403c] block mb-1">TEMP (°C)</label>
-                      <input type="number" step="0.1" value={simTemp} onChange={e => setSimTemp(e.target.value)} className="w-full border-b border-[#cbd5e1] py-1 text-xs bg-transparent font-bold" />
-                    </div>
-                  </div>
-
-                  <button type="submit" disabled={isExecutingTest} className="py-2.5 px-6 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer">
-                    {isExecutingTest ? "RECORDING..." : "COMMIT ALL 6 LINE READINGS"}
-                  </button>
-                </form>
-              </div>
             </motion.div>
           )}
 

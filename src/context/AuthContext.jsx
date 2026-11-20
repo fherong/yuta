@@ -12,31 +12,6 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   const login = async (email, password, accountProfile) => {
-    // Demo Fast-Login Bypass for quick testing
-    if (email === "admin@yuta.com" && password === "password123") {
-      const demoAdmin = {
-        uid: "demo-admin-01",
-        email: "admin@yuta.com",
-        employeeId: "EMP-ADM-001",
-        fullname: "Plant Admin",
-        role: "Admin"
-      };
-      setCurrentUser(demoAdmin);
-      return demoAdmin;
-    }
-
-    if (email === "employee@yuta.com" && password === "password123") {
-      const demoEmployee = {
-        uid: "demo-employee-01",
-        email: "employee@yuta.com",
-        employeeId: "EMP-2026-001",
-        fullname: "Floor Technician",
-        role: "Employee"
-      };
-      setCurrentUser(demoEmployee);
-      return demoEmployee;
-    }
-
     if (accountProfile) {
       setCurrentUser(accountProfile);
       return accountProfile;
@@ -56,10 +31,6 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
-    if (currentUser?.uid?.startsWith("demo-")) {
-      setCurrentUser(null);
-      return;
-    }
     await signOut(auth);
     setCurrentUser(null);
   };
@@ -75,9 +46,7 @@ export const AuthProvider = ({ children }) => {
           ...userData
         });
       } else {
-        if (!currentUser?.uid?.startsWith("demo-")) {
-          setCurrentUser(null);
-        }
+        setCurrentUser(null);
       }
       setLoading(false);
     });

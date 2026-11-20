@@ -10,43 +10,12 @@ export const Login = () => {
   const [error, setError] = useState('');
   const { login } = useAuth();
 
-  const handleLoginProcess = async (idToUse, passToUse) => {
+  const handleLoginProcess = async () => {
     setError('');
-    const cleanId = (idToUse || identifier).trim();
-    const cleanPass = passToUse || password;
+    const cleanId = identifier.trim();
+    const cleanPass = password;
 
-    // 1. Built-in Demo Credentials (Bypasses remote auth errors)
-    if (cleanId === 'admin@yuta.com' || cleanId === 'ADMIN') {
-      if (cleanPass !== 'password123') {
-        setError('INVALID SECURITY PIN');
-        return;
-      }
-      await login(cleanId, cleanPass, {
-        uid: 'demo-admin-01',
-        employeeId: 'EMP-ADM-001',
-        fullname: 'Plant Administrator',
-        role: 'Admin',
-        email: 'admin@yuta.com'
-      });
-      return;
-    }
-
-    if (cleanId === 'employee@yuta.com' || cleanId === 'EMPLOYEE') {
-      if (cleanPass !== 'password123') {
-        setError('INVALID SECURITY PIN');
-        return;
-      }
-      await login(cleanId, cleanPass, {
-        uid: 'demo-employee-01',
-        employeeId: 'EMP-2026-001',
-        fullname: 'Plant Technician',
-        role: 'Employee',
-        email: 'employee@yuta.com'
-      });
-      return;
-    }
-
-    // 2. Realtime Database /users/{employeeId} lookup
+    // Realtime Database /users/{employeeId} lookup
     try {
       const userRef = ref(db, `users/${cleanId}`);
       const snapshot = await get(userRef);
@@ -70,7 +39,7 @@ export const Login = () => {
         }
       }
 
-      // 3. Standard Firebase Auth fallback
+      // Standard Firebase Auth fallback
       await login(cleanId, cleanPass);
     } catch (err) {
       console.error('Login error:', err);
@@ -81,18 +50,6 @@ export const Login = () => {
   const handleSubmit = (e) => {
     e.preventDefault();
     handleLoginProcess();
-  };
-
-  const handleDemoClick = (role) => {
-    if (role === 'admin') {
-      setIdentifier('admin@yuta.com');
-      setPassword('password123');
-      handleLoginProcess('admin@yuta.com', 'password123');
-    } else {
-      setIdentifier('employee@yuta.com');
-      setPassword('password123');
-      handleLoginProcess('employee@yuta.com', 'password123');
-    }
   };
 
   return (
@@ -160,28 +117,6 @@ export const Login = () => {
           </button>
         </form>
 
-        {/* Demo Fast Logins */}
-        <div className="mt-12 pt-6 border-t-2 border-[#e2d8cd]">
-          <p className="text-[10px] font-mono font-bold tracking-[0.2em] text-[#78716c] uppercase text-center mb-3">
-            Demo Access / Test Purposes Only
-          </p>
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => handleDemoClick('admin')}
-              className="py-2.5 px-3 border border-[#cbd5e1] bg-[#f3eee6] hover:bg-[#ede5d8] text-xs font-mono font-bold tracking-[0.2em] text-[#292524] uppercase transition cursor-pointer"
-            >
-              ADMIN
-            </button>
-            <button
-              type="button"
-              onClick={() => handleDemoClick('employee')}
-              className="py-2.5 px-3 border border-[#cbd5e1] bg-[#f3eee6] hover:bg-[#ede5d8] text-xs font-mono font-bold tracking-[0.2em] text-[#292524] uppercase transition cursor-pointer"
-            >
-              EMPLOYEE
-            </button>
-          </div>
-        </div>
       </div>
 
       {/* Footer Colophon */}

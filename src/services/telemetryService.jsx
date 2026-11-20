@@ -88,25 +88,6 @@ export async function archiveMotorAsset(motor, archivedBy) {
   return { id: archiveId, ...archiveRecord };
 }
 
-export async function logTestReading({ motorId, rawIR, temperature, ratedVoltage, employeeId, operatorName, ncAuxSafe, zeroVoltageSafe }) {
-  if (!ncAuxSafe || !zeroVoltageSafe) {
-    throw new Error("Safety interlocks failed: Zero-energy state not confirmed.");
-  }
-  const histRef = push(ref(db, "history"));
-  const record = {
-    motorId,
-    rawIR: Number(rawIR),
-    temperatureC: Number(temperature),
-    motorVoltage: Number(ratedVoltage),
-    employeeId: employeeId || "N/A",
-    operatorName: operatorName || "Operator",
-    safetyOK: true,
-    status: "NORMAL",
-    timestamp: new Date().toISOString()
-  };
-  await set(histRef, record);
-}
-
 // --- EMPLOYEE ID-BASED USER MANAGEMENT ---
 export async function provisionUserWithId(employeeId, { fullname, role, pin }) {
   const cleanId = String(employeeId).trim();
