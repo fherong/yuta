@@ -17,7 +17,7 @@ import {
 } from './services/telemetryService';
 import { exportTelemetryToCSV, exportMaintenanceReportPDF, exportArchiveReportPDF } from './utils/reportGenerator';
 import { getEmployeeId } from './utils/employeeId';
-import { formatTelemetryLog } from './utils/telemetryLogFormatter.js';
+import { convertTelemetryLogUnit, formatTelemetryLog } from './utils/telemetryLogFormatter.js';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   LogOut, 
@@ -90,6 +90,7 @@ export default function App() {
   const [selectedMotor, setSelectedMotor] = useState(null);
   const [fleetPage, setFleetPage] = useState(1);
   const [logsPage, setLogsPage] = useState(1);
+  const [logsReadingUnit, setLogsReadingUnit] = useState('MΩ');
 
   // Real-time & History States
   const [liveTelemetry, setLiveTelemetry] = useState(null);
@@ -210,6 +211,9 @@ export default function App() {
   const filteredLogs = selectedMotor?.id === 'motor-mock'
     ? telemetryLogs
     : telemetryLogs.filter(l => l.motor_id === selectedMotor?.id);
+  const logsInDisplayUnit = filteredLogs.map(log =>
+    convertTelemetryLogUnit(log, logsReadingUnit)
+  );
   const archivedMotorIds = new Set(
     archivedItems.filter((item) => item.type === 'motor').map((item) => item.originalId)
   );
@@ -222,7 +226,7 @@ export default function App() {
   );
   const logsPageCount = Math.max(1, Math.ceil(filteredLogs.length / LOGS_PAGE_SIZE));
   const currentLogsPage = Math.min(logsPage, logsPageCount);
-  const paginatedLogs = filteredLogs.slice(
+  const paginatedLogs = logsInDisplayUnit.slice(
     (currentLogsPage - 1) * LOGS_PAGE_SIZE,
     currentLogsPage * LOGS_PAGE_SIZE
   );
@@ -856,11 +860,33 @@ export default function App() {
               <button onClick={handleCloseActiveMotor} className="inline-flex items-center gap-2 text-xs font-bold tracking-widest text-[#57534e] hover:text-[#1c1917] uppercase cursor-pointer">
                 <ArrowLeft className="w-4 h-4" /> FLEET OVERVIEW
               </button>
-              <div className="flex justify-between items-baseline">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-2xl font-black uppercase">Historical Audit: {selectedMotor.motor_name}</h2>
-                <button onClick={() => exportTelemetryToCSV(filteredLogs, selectedMotor)} className="px-3 py-1.5 border border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold uppercase hover:bg-[#ede5d8]">
-                  EXPORT CSV
-                </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold tracking-widest text-[#57534e] uppercase">Readings in</span>
+                    <div className="inline-flex border border-[#cbd5e1]" role="group" aria-label="Log resistance unit">
+                      {['MΩ', 'GΩ'].map(unit => (
+                        <button
+                          key={unit}
+                          type="button"
+                          aria-pressed={logsReadingUnit === unit}
+                          onClick={() => setLogsReadingUnit(unit)}
+                          className={`px-3 py-1.5 text-xs font-bold transition ${
+                            logsReadingUnit === unit
+                              ? 'bg-[#1c1917] text-[#fbf9f5]'
+                              : 'bg-[#f3eee6] text-[#57534e] hover:bg-[#ede5d8]'
+                          }`}
+                        >
+                          {unit}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <button onClick={() => exportTelemetryToCSV(logsInDisplayUnit, selectedMotor)} className="px-3 py-1.5 border border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold uppercase hover:bg-[#ede5d8]">
+                    EXPORT CSV
+                  </button>
+                </div>
               </div>
 
               <div className="border-2 border-[#e2d8cd] overflow-x-auto bg-[#f8f5ee]">

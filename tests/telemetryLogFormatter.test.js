@@ -1,7 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatTelemetryLog } from "../src/utils/telemetryLogFormatter.js";
+import {
+  convertTelemetryLogUnit,
+  formatTelemetryLog,
+} from "../src/utils/telemetryLogFormatter.js";
+
+test("converts log readings from GOhm to MOhm without changing stored values", () => {
+  const log = {
+    reading_unit: "GΩ",
+    ab_corrected: 0.11,
+    bc_corrected: "",
+  };
+
+  const converted = convertTelemetryLogUnit(log, "MΩ");
+
+  assert.equal(converted.ab_corrected, 110);
+  assert.equal(converted.bc_corrected, "");
+  assert.equal(converted.reading_unit, "MΩ");
+  assert.equal(log.ab_corrected, 0.11);
+});
+
+test("converts log readings from MOhm to GOhm", () => {
+  const log = {
+    reading_unit: "MΩ",
+    ab_corrected: 110,
+    bc_corrected: 5,
+  };
+
+  const converted = convertTelemetryLogUnit(log, "GΩ");
+
+  assert.equal(converted.ab_corrected, 0.11);
+  assert.equal(converted.bc_corrected, 0.005);
+  assert.equal(converted.reading_unit, "GΩ");
+});
 
 test("keeps Arduino readings unchanged while deriving display status", () => {
   const record = formatTelemetryLog({

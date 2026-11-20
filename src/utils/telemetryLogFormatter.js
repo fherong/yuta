@@ -1,6 +1,37 @@
 import { getEmployeeId } from "./employeeId.js";
 
 const MINIMUM_NORMAL_IR_MOHMS = 5;
+const RESISTANCE_DISPLAY_FIELDS = [
+  "ab_corrected",
+  "bc_corrected",
+  "ca_corrected",
+  "ag_corrected",
+  "bg_corrected",
+  "cg_corrected",
+];
+
+export function convertTelemetryLogUnit(log, targetUnit) {
+  if (targetUnit !== "MΩ" && targetUnit !== "GΩ") {
+    throw new TypeError("Target resistance unit must be MΩ or GΩ.");
+  }
+
+  const sourceUnit = log.reading_unit === "GΩ" ? "GΩ" : "MΩ";
+  if (sourceUnit === targetUnit) return log;
+
+  const multiplier = targetUnit === "GΩ" ? 0.001 : 1000;
+  const convertedLog = { ...log, reading_unit: targetUnit };
+  for (const field of RESISTANCE_DISPLAY_FIELDS) {
+    const value = log[field];
+    if (value == null || value === "") continue;
+
+    const numericValue = Number(value);
+    if (Number.isFinite(numericValue)) {
+      convertedLog[field] = numericValue * multiplier;
+    }
+  }
+
+  return convertedLog;
+}
 
 function getArduinoManualStatus(item) {
   if (item.ncAuxSafe === false || item.zeroVoltageSafe === false) {
