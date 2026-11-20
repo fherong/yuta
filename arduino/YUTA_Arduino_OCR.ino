@@ -882,9 +882,9 @@ void sendTestRecord(
   json += String(measuredVoltage, 2);
   json += ",";
 
-  json += ",\"minutes\":6";
+  json += "\"minutes\":6,";
 
-  json += ",\"employeeId\":\"";
+  json += "\"employeeId\":\"";
   json += jsonEscape(employeeId);
   json += "\",";
 
