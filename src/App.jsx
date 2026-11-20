@@ -629,7 +629,7 @@ export default function App() {
               </header>
 
               {/* Gauges Matrix including NOMINAL DATA BOX */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 
                 {/* 1. Evaluation Status */}
                 <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
@@ -671,25 +671,6 @@ export default function App() {
                   <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">LOWEST OF 6 LINES</p>
                 </div>
 
-                {/* 4. Threshold Limit */}
-                <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
-                  <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">IEEE LIMIT</span>
-                  <div className="mt-2 flex items-baseline gap-1">
-                    <span className="text-3xl font-black tracking-tight">{currentEval.irMin}</span>
-                    <span className="text-xs font-black text-[#57534e]">MΩ</span>
-                  </div>
-                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">kV + 1 THRESHOLD</p>
-                </div>
-
-                {/* 5. Temperature */}
-                <div className="border-2 border-[#e2d8cd] p-5 bg-[#f8f5ee]">
-                  <span className="text-xs font-bold tracking-[0.15em] text-[#57534e] uppercase block">TEMP PROBE</span>
-                  <div className="mt-2 flex items-baseline gap-1">
-                    <span className="text-3xl font-black tracking-tight">{latest.temperature}</span>
-                    <span className="text-xs font-black text-[#57534e]">°C</span>
-                  </div>
-                  <p className="text-[10px] font-bold text-[#78716c] uppercase mt-3">DS18B20 SENSOR</p>
-                </div>
               </div>
 
               {/* 6-Line Degradation Timeline with Phase & Voltage Controls */}
