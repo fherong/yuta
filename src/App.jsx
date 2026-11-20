@@ -17,6 +17,7 @@ import {
 } from './services/telemetryService';
 import { exportTelemetryToCSV, exportMaintenanceReportPDF, exportArchiveReportPDF } from './utils/reportGenerator';
 import { getEmployeeId } from './utils/employeeId';
+import { formatTelemetryLog } from './utils/telemetryLogFormatter.js';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   LogOut, 
@@ -173,49 +174,7 @@ export default function App() {
     const loadHistory = async () => {
       const historyData = await fetchTelemetryHistory();
       if (historyData && historyData.length > 0) {
-        const formatted = historyData.map((item) => {
-          const testDate = item.timestamp
-            ? new Date(item.timestamp).toLocaleString([], {
-                year: 'numeric',
-                month: 'short',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit',
-              })
-            : 'LIVE';
-          const rawAB = Number(item.raw_ab || item.rawIR || 2.40);
-          const rawBC = Number(item.raw_bc || item.rawIR || 2.42);
-          const rawCA = Number(item.raw_ca || item.rawIR || 2.38);
-          const rawAG = Number(item.raw_ag || item.rawIR || 2.25);
-          const rawBG = Number(item.raw_bg || item.rawIR || 2.28);
-          const rawCG = Number(item.raw_cg || item.rawIR || 2.20);
-          
-          const temp = Number(item.temperatureC || 38.5);
-          const kt = temp >= 40.0 ? Math.pow(0.5, (temp - 40.0) / 10.0) : Math.pow(2.0, (40.0 - temp) / 10.0);
-
-          return {
-            id: item.id || item.timestamp,
-            motor_id: item.motorId || 'motor-mock',
-            ab_corrected: Number((rawAB * kt).toFixed(2)),
-            bc_corrected: Number((rawBC * kt).toFixed(2)),
-            ca_corrected: Number((rawCA * kt).toFixed(2)),
-            ag_corrected: Number((rawAG * kt).toFixed(2)),
-            bg_corrected: Number((rawBG * kt).toFixed(2)),
-            cg_corrected: Number((rawCG * kt).toFixed(2)),
-            raw_ir: Number((rawCG * kt).toFixed(2)),
-            temperature: temp,
-            test_voltage: Number(item.testVoltage || item.test_voltage || item.ratedVoltage || 1000),
-            minutes: Number(item.minutes || 1.0),
-            ir_min: Number(item.thresholdIR || 1.38),
-            motor_status: item.status || 'NORMAL',
-            operator_name: item.operatorName || 'Python Gateway OCR',
-            employee_id: getEmployeeId(item),
-            testDate,
-            formattedDate: item.timestamp 
-              ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              : 'LIVE'
-          };
-        });
+        const formatted = historyData.map(formatTelemetryLog);
         setTelemetryLogs(formatted);
       }
     };
