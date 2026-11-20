@@ -1,5 +1,6 @@
 import { ref, onValue, get, set, push, update, remove, off, runTransaction } from "firebase/database";
 import { db } from "../firebase";
+import { sortTelemetryHistoryNewestFirst } from "../utils/sortTelemetryHistory.js";
 
 // --- GATEWAY & LOGS ---
 export function subscribeToLiveTelemetry(callback) {
@@ -13,9 +14,9 @@ export async function fetchTelemetryHistory() {
     const historyRef = ref(db, "history");
     const snapshot = await get(historyRef);
     if (!snapshot.exists()) return [];
-    return Object.entries(snapshot.val())
-      .map(([key, record]) => ({ id: key, ...record }))
-      .reverse();
+    return sortTelemetryHistoryNewestFirst(
+      Object.entries(snapshot.val()).map(([key, record]) => ({ id: key, ...record }))
+    );
   } catch {
     return [];
   }
