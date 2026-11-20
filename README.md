@@ -33,7 +33,7 @@ SERIAL_PORT=/dev/ttyACM0 CAMERA_DEVICE=0 CAMERA_PREVIEW=1 .venv/bin/python gatew
 ```
 
 The default USB camera is index `0`; no model name is required. If it is not detected, check `/dev/video*` and set `CAMERA_DEVICE` to another index (such as `1`) or a device path (such as `/dev/video0`).
-Run the command from the Pi's desktop session to see the live preview while waiting and during captures. `CAMERA_PREVIEW=1` requires a display session; set it to `0` for headless use.
+Run the command from the Pi's desktop session to see the live preview while waiting and during captures. The preview refreshes independently while OCR samples are processed in the background. `CAMERA_PREVIEW=1` requires a display session; set it to `0` for headless use.
 
 The sketch requests one camera capture for each of the six winding positions. Each capture lasts 60 seconds; four consecutive OCR samples must agree within 0.5%, and the latest stable sample in that window is kept. The LCD shows the captured GΩ value for review before the final safety check and save. If no stable value is found, the operator can retry that position or cancel the test.
 

@@ -6,6 +6,7 @@ import sqlite3
 import statistics
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 import gatewayy
 
@@ -93,24 +94,20 @@ def capture_last_stable_reading(
     monotonic=time.monotonic,
     sleep=time.sleep,
     preview_frame=None,
+    ocr_executor=None,
 ):
     deadline = monotonic() + duration
     samples = deque(maxlen=OCR_STABLE_SAMPLES)
     latest_stable = None
+    owns_executor = ocr_executor is None
+    executor = ocr_executor or ThreadPoolExecutor(max_workers=1)
+    ocr_future = None
+    next_sample = monotonic()
 
-    while monotonic() < deadline:
-        if hasattr(camera, "capture_array"):
-            frame = camera.capture_array()
-        else:
-            success, frame = camera.read()
-            if not success:
-                raise RuntimeError("Unable to read a frame from the USB camera")
-
-        if preview_frame is not None:
-            preview_frame(frame)
-
+    def consume_ocr_result(future):
+        nonlocal latest_stable
         try:
-            samples.append(parse_ut501a_reading(image_to_text(frame)))
+            samples.append(parse_ut501a_reading(future.result()))
         except ValueError:
             samples.clear()
         else:
@@ -120,7 +117,45 @@ def capture_last_stable_reading(
                 if high - low <= tolerance:
                     latest_stable = samples[-1]
 
-        sleep(min(sample_interval, max(0, deadline - monotonic())))
+    try:
+        while monotonic() < deadline:
+            if hasattr(camera, "capture_array"):
+                frame = camera.capture_array()
+            else:
+                success, frame = camera.read()
+                if not success:
+                    raise RuntimeError("Unable to read a frame from the USB camera")
+
+            if preview_frame is not None:
+                preview_frame(frame)
+
+            now = monotonic()
+            if ocr_future is not None and ocr_future.done():
+                consume_ocr_result(ocr_future)
+                ocr_future = None
+                next_sample = now + sample_interval
+
+            if ocr_future is None and now >= next_sample:
+                ocr_future = executor.submit(image_to_text, frame)
+
+            poll_interval = 0.01 if preview_frame is not None else sample_interval
+            sleep(min(poll_interval, max(0, deadline - monotonic())))
+
+        while (
+            preview_frame is not None
+            and ocr_future is not None
+            and not ocr_future.done()
+        ):
+            success, frame = camera.read()
+            if success:
+                preview_frame(frame)
+            sleep(0.01)
+
+        if ocr_future is not None:
+            consume_ocr_result(ocr_future)
+    finally:
+        if owns_executor:
+            executor.shutdown(wait=True)
 
     if latest_stable is None:
         raise ValueError("No stable UT501A resistance reading was detected during the test")
@@ -272,6 +307,19 @@ def _handle_capture_event(
     return pending_test
 
 
+def _wait_with_camera_preview(camera, preview_frame, duration):
+    if preview_frame is None:
+        time.sleep(duration)
+        return
+
+    deadline = time.monotonic() + duration
+    while time.monotonic() < deadline:
+        success, frame = camera.read()
+        if success:
+            preview_frame(frame)
+        time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+
+
 def run_ocr_gateway(
     serial_module,
     request_exception,
@@ -296,17 +344,38 @@ def run_ocr_gateway(
                 next_retry = time.monotonic() + gatewayy.QUEUE_RETRY_INTERVAL
 
             try:
+                serial_timeout = 0.03 if preview_frame is not None else gatewayy.SERIAL_TIMEOUT
                 with serial_module.Serial(
                     SERIAL_PORT,
                     BAUD_RATE,
-                    timeout=gatewayy.SERIAL_TIMEOUT,
+                    timeout=serial_timeout,
                 ) as arduino:
-                    time.sleep(2)
+                    _wait_with_camera_preview(camera, preview_frame, 2)
                     print(f"Connected to Arduino on {SERIAL_PORT} at {BAUD_RATE} baud")
                     print("Waiting for OCR capture events from the Arduino...")
+                    serial_buffer = bytearray()
 
                     while True:
-                        raw_line = arduino.readline()
+                        if b"\n" not in serial_buffer:
+                            serial_buffer.extend(arduino.readline())
+                            if (
+                                b"\n" not in serial_buffer
+                                and len(serial_buffer) > 4096
+                            ):
+                                print("Discarding oversized incomplete Arduino message")
+                                serial_buffer.clear()
+                            if b"\n" not in serial_buffer:
+                                if preview_frame is not None:
+                                    success, frame = camera.read()
+                                    if success:
+                                        preview_frame(frame)
+                                if time.monotonic() >= next_retry:
+                                    gatewayy.retry_pending_records(queue, session)
+                                    next_retry = time.monotonic() + gatewayy.QUEUE_RETRY_INTERVAL
+                                continue
+
+                        raw_line, _, remainder = serial_buffer.partition(b"\n")
+                        serial_buffer = bytearray(remainder)
                         if preview_frame is not None:
                             success, frame = camera.read()
                             if success:
@@ -314,8 +383,6 @@ def run_ocr_gateway(
                         if time.monotonic() >= next_retry:
                             gatewayy.retry_pending_records(queue, session)
                             next_retry = time.monotonic() + gatewayy.QUEUE_RETRY_INTERVAL
-                        if not raw_line:
-                            continue
 
                         line = raw_line.decode("utf-8", errors="replace").strip()
                         if not line:
@@ -417,7 +484,11 @@ def run_ocr_gateway(
                     f"Arduino serial port {SERIAL_PORT} unavailable: {error}. "
                     "Retrying in 5 seconds..."
                 )
-                time.sleep(gatewayy.RECONNECT_DELAY)
+                _wait_with_camera_preview(
+                    camera,
+                    preview_frame,
+                    gatewayy.RECONNECT_DELAY,
+                )
     except KeyboardInterrupt:
         print("\nOCR gateway stopped.")
 

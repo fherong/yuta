@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from concurrent.futures import Future
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -17,6 +18,12 @@ from gatewayy import TelemetryQueue
 
 
 class OCRReadingTests(unittest.TestCase):
+    class ImmediateExecutor:
+        def submit(self, function, frame):
+            future = Future()
+            future.set_result(function(frame))
+            return future
+
     def test_opens_default_usb_camera_by_index(self):
         cv2 = Mock()
         camera = Mock()
@@ -124,20 +131,21 @@ class OCRReadingTests(unittest.TestCase):
                 return True, self.frame
 
         clock = Clock()
-        readings = ["1.0"] * 4 + ["2.0"] * 4
+        readings = iter(["1.0"] * 4 + ["2.0"] * 4)
         preview_frames = []
         value = capture_last_stable_reading(
             Camera(),
-            lambda frame: readings[frame - 1],
+            lambda frame: next(readings),
             duration=2,
             sample_interval=0.25,
             monotonic=clock.monotonic,
             sleep=clock.sleep,
             preview_frame=preview_frames.append,
+            ocr_executor=self.ImmediateExecutor(),
         )
 
         self.assertEqual(value, 2.0)
-        self.assertEqual(len(preview_frames), 8)
+        self.assertGreater(len(preview_frames), 80)
 
     def test_capture_fails_when_no_four_samples_are_within_tolerance(self):
         class Clock:
@@ -157,19 +165,49 @@ class OCRReadingTests(unittest.TestCase):
                 return True, self.frame
 
         clock = Clock()
-        readings = ["1.0", "1.1"] * 4
+        readings = iter(["1.0", "1.1"] * 4)
         with self.assertRaisesRegex(ValueError, "No stable"):
             capture_last_stable_reading(
                 Camera(),
-                lambda frame: readings[frame - 1],
+                lambda frame: next(readings),
                 duration=2,
                 sample_interval=0.25,
                 monotonic=clock.monotonic,
                 sleep=clock.sleep,
+                ocr_executor=self.ImmediateExecutor(),
             )
 
 
 class OCRSerialFlowTests(unittest.TestCase):
+    def test_preview_keeps_refreshing_and_reassembles_partial_serial_lines(self):
+        arduino = Mock()
+        arduino.__enter__ = Mock(return_value=arduino)
+        arduino.__exit__ = Mock(return_value=False)
+        arduino.readline.side_effect = [
+            b'{"event":"test_',
+            b'cancelled"}\n',
+            KeyboardInterrupt,
+        ]
+        serial_module = SimpleNamespace(SerialException=Exception)
+        serial_module.Serial = Mock(return_value=arduino)
+        camera = Mock()
+        camera.read.return_value = (True, object())
+        preview_frame = Mock()
+
+        with patch("gateway.gatewayy.retry_pending_records"):
+            run_ocr_gateway(
+                serial_module,
+                Exception,
+                Mock(),
+                Mock(),
+                camera,
+                lambda frame: "",
+                preview_frame=preview_frame,
+            )
+
+        self.assertEqual(serial_module.Serial.call_args.kwargs["timeout"], 0.03)
+        self.assertGreater(preview_frame.call_count, 2)
+
     def test_captures_six_positions_and_saves_camera_values(self):
         with tempfile.TemporaryDirectory() as directory:
             queue = TelemetryQueue(f"{directory}/telemetry.sqlite3")
