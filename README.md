@@ -48,7 +48,11 @@ systemctl status yuta-gateway.service
 journalctl -u yuta-gateway.service -f
 ```
 
-The optional `/etc/yuta-gateway.env` file can hold `FIREBASE_AUTH_TOKEN=...` if database authentication is required. Keep that file off the repository and restrict access to it. With the service enabled, the Pi can run headlessly: after power returns, systemd starts the gateway and it waits/retries for the Arduino. The Pi needs internet access when a reading is sent; if Firebase is unreachable during sync, the gateway reports the error but does not queue that record for later.
+The optional `/etc/yuta-gateway.env` file can hold `FIREBASE_AUTH_TOKEN=...` if database authentication is required. Keep that file off the repository and restrict access to it. With the service enabled, the Pi can run headlessly: after power returns, systemd starts the gateway and it waits/retries for the Arduino.
+
+Each Arduino test record is committed to a local SQLite queue before cloud sync. The default database is `~/.local/share/yuta-gateway/telemetry.sqlite3` on the Pi's local storage (normally its SD card); set `YUTA_QUEUE_DB_PATH` to use another path. The gateway retries pending records every five seconds and after restart. It removes a queued record only after both `/live` and `/history` accept it, and uses a stable history key so retries do not duplicate log entries. The LCD reports when a record is safely queued locally but still pending cloud sync.
+
+The employee list, motor list, and PIN verification still require Firebase. This queue covers a connection drop after the operator has logged in and the motor list has loaded; starting a new test while already offline is not supported.
 
 ## Web application
 

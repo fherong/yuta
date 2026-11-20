@@ -1,11 +1,19 @@
+import tempfile
 import unittest
-from unittest.mock import Mock
+from pathlib import Path
+from unittest.mock import Mock, call
+
+import requests
 
 from gatewayy import (
+    FIREBASE_DATABASE_URL,
+    TelemetryQueue,
     authenticate_employee,
     build_log_record,
     eligible_employees,
     employee_id_suffix,
+    flush_pending_records,
+    send_ack,
     send_employee_list,
 )
 
@@ -152,6 +160,68 @@ class EmployeeProtocolTests(unittest.TestCase):
         self.assertEqual(record["raw_ab"], "2.400")
         self.assertEqual(set(record) - set(data), {"timestamp"})
         self.assertTrue(record["timestamp"].endswith("Z"))
+
+    def test_queue_survives_reopen_and_retries_without_duplicate_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "telemetry.sqlite3"
+            queue = TelemetryQueue(path)
+            record = build_log_record({"motorId": "motor-001", "raw_ab": 2.4})
+            record_id = queue.enqueue(record)
+            reopened_queue = TelemetryQueue(path)
+            self.assertEqual(
+                reopened_queue.pending_records(),
+                [(record_id, record)],
+            )
+
+            offline_response = Mock()
+            offline_response.raise_for_status.side_effect = requests.ConnectionError("offline")
+            session = Mock()
+            session.put.return_value = offline_response
+
+            with self.assertRaises(requests.ConnectionError):
+                flush_pending_records(reopened_queue, session)
+
+            self.assertEqual(
+                reopened_queue.pending_records(),
+                [(record_id, record)],
+            )
+
+            session.put.return_value = Mock()
+            self.assertEqual(flush_pending_records(reopened_queue, session), 1)
+            self.assertEqual(reopened_queue.pending_records(), [])
+            self.assertEqual(
+                session.put.call_args_list[-2:],
+                [
+                    call(
+                        f"{FIREBASE_DATABASE_URL}/live.json",
+                        params=None,
+                        json=record,
+                        timeout=10,
+                    ),
+                    call(
+                        f"{FIREBASE_DATABASE_URL}/history/{record_id}.json",
+                        params=None,
+                        json=record,
+                        timeout=10,
+                    ),
+                ],
+            )
+
+    def test_acknowledges_local_queue_separately_from_cloud_sync(self):
+        arduino = Mock()
+
+        send_ack(arduino, "QUEUED")
+
+        arduino.write.assert_called_once_with(b"ACK|QUEUED\n")
+        arduino.flush.assert_called_once_with()
+
+    def test_acknowledges_synced_records_as_saved(self):
+        arduino = Mock()
+
+        send_ack(arduino, "SAVED")
+
+        arduino.write.assert_called_once_with(b"ACK|SAVED\n")
+        arduino.flush.assert_called_once_with()
 
 
 if __name__ == "__main__":

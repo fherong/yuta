@@ -1,10 +1,14 @@
-import json
 import hmac
+import json
 import os
 import re
+import sqlite3
 import time
+import uuid
 
+from contextlib import closing
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import quote
 
 import requests
@@ -29,6 +33,13 @@ AUTH_TOKEN = os.getenv("FIREBASE_AUTH_TOKEN")
 
 SERIAL_TIMEOUT = 1
 RECONNECT_DELAY = 5
+QUEUE_RETRY_INTERVAL = 5
+QUEUE_DB_PATH = Path(
+    os.getenv(
+        "YUTA_QUEUE_DB_PATH",
+        str(Path.home() / ".local" / "share" / "yuta-gateway" / "telemetry.sqlite3"),
+    )
+).expanduser()
 
 
 # =====================================================
@@ -249,11 +260,70 @@ def build_log_record(data):
     return record
 
 
+class TelemetryQueue:
+    def __init__(self, path):
+        self.path = Path(path).expanduser()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_telemetry (
+                    id TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.commit()
+
+    def enqueue(self, record):
+        record_id = f"{time.time_ns():016x}{uuid.uuid4().hex}"
+        payload = json.dumps(record, separators=(",", ":"), allow_nan=False)
+
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute(
+                "INSERT INTO pending_telemetry (id, payload) VALUES (?, ?)",
+                (record_id, payload),
+            )
+            connection.commit()
+
+        return record_id
+
+    def pending_records(self):
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
+            rows = connection.execute(
+                "SELECT id, payload FROM pending_telemetry ORDER BY rowid"
+            ).fetchall()
+
+        return [(record_id, json.loads(payload)) for record_id, payload in rows]
+
+    def remove(self, record_id):
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute(
+                "DELETE FROM pending_telemetry WHERE id = ?",
+                (record_id,),
+            )
+            connection.commit()
+
+    def contains(self, record_id):
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM pending_telemetry WHERE id = ?",
+                (record_id,),
+            ).fetchone()
+
+        return row is not None
+
+
 # =====================================================
 # FIREBASE SYNCHRONIZATION
 # =====================================================
 
-def sync_to_firebase(record, session):
+def sync_to_firebase(record_id, record, session):
 
     params = firebase_params()
 
@@ -267,9 +337,9 @@ def sync_to_firebase(record, session):
 
     live_response.raise_for_status()
 
-    # Add historical record.
-    history_response = session.post(
-        f"{FIREBASE_DATABASE_URL}/history.json",
+    # Use the local queue ID so retries cannot duplicate a history entry.
+    history_response = session.put(
+        f"{FIREBASE_DATABASE_URL}/history/{record_id}.json",
         params=params,
         json=record,
         timeout=10
@@ -280,28 +350,42 @@ def sync_to_firebase(record, session):
     return True
 
 
+def flush_pending_records(queue, session):
+    synced_count = 0
+
+    for record_id, record in queue.pending_records():
+        sync_to_firebase(record_id, record, session)
+        queue.remove(record_id)
+        synced_count += 1
+
+    return synced_count
+
+
+def retry_pending_records(queue, session):
+    try:
+        synced_count = flush_pending_records(queue, session)
+    except requests.RequestException as error:
+        print("Cloud sync deferred; queued records remain on the Pi:", error)
+        return
+    except sqlite3.Error as error:
+        print("Local telemetry queue error:", error)
+        return
+
+    if synced_count:
+        print(f"Synced {synced_count} queued test record(s) to Firebase.")
+
+
 # =====================================================
 # SERIAL ACKNOWLEDGEMENT
 # =====================================================
 
-def send_ack(arduino, success, message=""):
-
-    if success:
-        arduino.write(b"ACK|SAVED\n")
+def send_ack(arduino, status, message=""):
+    if status in ("SAVED", "QUEUED"):
+        arduino.write(f"ACK|{status}\n".encode("ascii"))
 
     else:
-        safe_message = (
-            str(message)
-            .replace("|", " ")
-            .replace("\n", " ")
-            .replace("\r", " ")
-        )
-
-        response = f"ACK|ERROR|{safe_message}\n"
-
-        arduino.write(
-            response.encode("utf-8")
-        )
+        safe_message = str(message).replace("|", " ").replace("\n", " ").replace("\r", " ")
+        arduino.write(f"ACK|ERROR|{safe_message}\n".encode("utf-8"))
 
     arduino.flush()
 
@@ -312,7 +396,9 @@ def send_ack(arduino, success, message=""):
 
 def run_gateway():
 
+    queue = TelemetryQueue(QUEUE_DB_PATH)
     session = requests.Session()
+    next_queue_retry = 0
 
     print("======================================")
     print("       Y.U.T.A. RASPBERRY PI")
@@ -322,12 +408,16 @@ def run_gateway():
     print(f"Firebase: {FIREBASE_DATABASE_URL}")
     print(f"Serial port: {SERIAL_PORT}")
     print(f"Baud rate: {BAUD_RATE}")
+    print(f"Local queue: {queue.path}")
     print("Waiting for Arduino...")
     print()
 
     try:
 
         while True:
+            if time.monotonic() >= next_queue_retry:
+                retry_pending_records(queue, session)
+                next_queue_retry = time.monotonic() + QUEUE_RETRY_INTERVAL
 
             try:
 
@@ -351,6 +441,10 @@ def run_gateway():
                     while True:
 
                         raw_line = arduino.readline()
+
+                        if time.monotonic() >= next_queue_retry:
+                            retry_pending_records(queue, session)
+                            next_queue_retry = time.monotonic() + QUEUE_RETRY_INTERVAL
 
                         if not raw_line:
                             continue
@@ -438,22 +532,27 @@ def run_gateway():
 
                             data = json.loads(line)
 
+                            if (
+                                isinstance(data, dict)
+                                and data.get("event") in ("test_started", "test_cancelled")
+                            ):
+                                continue
+
                             record = build_log_record(data)
+                            record_id = queue.enqueue(record)
 
-                            sync_to_firebase(
-                                record,
-                                session
-                            )
+                            try:
+                                flush_pending_records(queue, session)
+                            except requests.RequestException as error:
+                                print("Cloud sync deferred; record remains queued:", error)
 
-                            send_ack(
-                                arduino,
-                                True
-                            )
+                            ack_status = "QUEUED" if queue.contains(record_id) else "SAVED"
+                            send_ack(arduino, ack_status)
 
-                            print()
-                            print(
-                                "Firebase synchronization successful."
-                            )
+                            if ack_status == "SAVED":
+                                print("Record synchronized to Firebase.")
+                            else:
+                                print("Record saved locally; cloud sync is pending.")
 
                             if "motorName" in record:
                                 print(
@@ -471,17 +570,18 @@ def run_gateway():
                         except (
                             json.JSONDecodeError,
                             ValueError,
-                            requests.RequestException
+                            sqlite3.Error,
+                            OSError
                         ) as error:
 
                             print(
-                                "Record processing failed:",
+                                "Record processing or local queue write failed:",
                                 error
                             )
 
                             send_ack(
                                 arduino,
-                                False,
+                                "ERROR",
                                 str(error)
                             )
 

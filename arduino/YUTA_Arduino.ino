@@ -43,6 +43,12 @@ int selectedEmployee = 0;
 bool readyScreenShown = false;
 bool operatorLoggedIn = false;
 
+enum SaveResult {
+  SAVE_FAILED,
+  SAVE_SYNCED,
+  SAVE_QUEUED
+};
+
 const byte ROWS = 4;
 const byte COLS = 4;
 
@@ -987,13 +993,13 @@ bool confirmMeasurements() {
 // WAIT FOR PI ACKNOWLEDGEMENT
 // =====================================================
 
-bool waitForAcknowledgement() {
+SaveResult waitForAcknowledgement() {
   unsigned long startTime = millis();
 
   char buffer[100];
   int index = 0;
 
-  while (millis() - startTime < 10000) {
+  while (millis() - startTime < 35000) {
     while (Serial.available()) {
       char c = Serial.read();
 
@@ -1004,11 +1010,15 @@ bool waitForAcknowledgement() {
         index = 0;
 
         if (strcmp(buffer, "ACK|SAVED") == 0) {
-          return true;
+          return SAVE_SYNCED;
+        }
+
+        if (strcmp(buffer, "ACK|QUEUED") == 0) {
+          return SAVE_QUEUED;
         }
 
         if (strncmp(buffer, "ACK|ERROR", 9) == 0) {
-          return false;
+          return SAVE_FAILED;
         }
       }
       else if (index < sizeof(buffer) - 1) {
@@ -1017,7 +1027,7 @@ bool waitForAcknowledgement() {
     }
   }
 
-  return false;
+  return SAVE_FAILED;
 }
 
 // =====================================================
@@ -1138,11 +1148,19 @@ void performTest() {
     "Waiting for Pi..."
   );
 
-  if (waitForAcknowledgement()) {
+  SaveResult saveResult = waitForAcknowledgement();
+  if (saveResult == SAVE_SYNCED) {
     showMessage(
       "RECORD SAVED",
       "Saved on Pi",
       "Cloud sync complete",
+      "Test completed"
+    );
+  } else if (saveResult == SAVE_QUEUED) {
+    showMessage(
+      "SAVED ON SD CARD",
+      "Cloud upload pending",
+      "Will retry online",
       "Test completed"
     );
   }
