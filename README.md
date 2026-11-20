@@ -18,9 +18,7 @@ SERIAL_PORT=/dev/ttyACM0 python3 gatewayy.py
 
 Set `SERIAL_PORT` to the Arduino's actual device (for example `/dev/ttyUSB0`) and `BAUD_RATE` to match the Arduino sketch. The default baud rate is `9600`. If the Realtime Database requires an auth token, set `FIREBASE_AUTH_TOKEN` in the environment. `FIREBASE_DATABASE_URL` can also be set to the database's base URL.
 
-The Arduino should send one JSON object followed by a newline for each completed test. Required values are:
-
-For a completed safe test, the Arduino sends `motorId`, `motorName`, `motorVoltage`, `testVoltage`, the two boolean safety values, and all six readings (`raw_ab`, `raw_bc`, `raw_ca`, `raw_ag`, `raw_bg`, `raw_cg`). It also includes the employee ID and operator name from the LCD login. The gateway records unsafe interlock responses too, marking them `SAFETY INTERLOCK FAILED`; it does not mark them as safe or discard them. For safe tests, it calculates minimum and average IR readings and compares the minimum with the voltage-based threshold, then writes records to `/live` and `/history`, which are the paths consumed by the website.
+The Arduino sends one JSON object followed by a newline for each test. A completed safe test includes `motorId`, `motorName`, `motorVoltage`, `testVoltage`, the two boolean safety values, all six readings (`raw_ab`, `raw_bc`, `raw_ca`, `raw_ag`, `raw_bg`, `raw_cg`), and the employee ID and operator name from the LCD login. The gateway writes the received fields to `/live` and `/history` without converting measurements or deriving status, safety, minimum/average IR, or threshold values. It adds a UTC `timestamp` only when the Arduino message does not include one.
 
 ### LCD employee login
 

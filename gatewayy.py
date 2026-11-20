@@ -1,6 +1,5 @@
 import json
 import hmac
-import math
 import os
 import re
 import time
@@ -30,21 +29,6 @@ AUTH_TOKEN = os.getenv("FIREBASE_AUTH_TOKEN")
 
 SERIAL_TIMEOUT = 1
 RECONNECT_DELAY = 5
-
-
-IR_FIELDS = (
-    "raw_ab",
-    "raw_bc",
-    "raw_ca",
-    "raw_ag",
-    "raw_bg",
-    "raw_cg",
-)
-
-NUMERIC_FIELDS = IR_FIELDS + (
-    "testVoltage",
-    "motorVoltage",
-)
 
 
 # =====================================================
@@ -251,250 +235,17 @@ def authenticate_employee(employee_id, pin, session):
     return hmac.compare_digest(clean_pin, str(pin))
 
 
-# =====================================================
-# VALIDATION
-# =====================================================
-
-def validate_numeric_fields(data):
-    values = {}
-
-    for field in NUMERIC_FIELDS:
-
-        if field not in data:
-            continue
-
-        value = data[field]
-
-        if isinstance(value, bool):
-            raise ValueError(
-                f"{field} must be numeric."
-            )
-
-        try:
-            value = float(value)
-
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"{field} must be numeric."
-            ) from None
-
-        if not math.isfinite(value):
-            raise ValueError(
-                f"{field} must be finite."
-            )
-
-        values[field] = value
-
-    return values
-
-
 def build_log_record(data):
-
     if not isinstance(data, dict):
         raise ValueError(
             "Arduino message must be a JSON object."
         )
 
-    required_fields = (
-        "motorId",
-        "motorVoltage",
-        "ncAuxSafe",
-        "zeroVoltageSafe",
-    )
-
-    missing = [
-        field
-        for field in required_fields
-        if field not in data
-    ]
-
-    if missing:
-        raise ValueError(
-            "Missing required fields: "
-            + ", ".join(missing)
-        )
-
-    motor_id = data["motorId"]
-
-    if not isinstance(motor_id, str) or not motor_id.strip():
-        raise ValueError(
-            "motorId must be a non-empty string."
-        )
-
-    for field in (
-        "ncAuxSafe",
-        "zeroVoltageSafe"
-    ):
-
-        if not isinstance(data[field], bool):
-            raise ValueError(
-                f"{field} must be a JSON boolean."
-            )
-
-    values = validate_numeric_fields(data)
-
-    motor_voltage = values["motorVoltage"]
-
-    if motor_voltage <= 0:
-        raise ValueError(
-            "motorVoltage must be greater than zero."
-        )
-
-    safety_ok = (
-        data["ncAuxSafe"]
-        and data["zeroVoltageSafe"]
-    )
-
-    timestamp = datetime.now(
-        timezone.utc
-    ).isoformat().replace("+00:00", "Z")
-
-    record = {
-        "timestamp": timestamp,
-
-        "motorId": motor_id.strip(),
-
-        "motorName": str(
-            data.get("motorName", "Unknown Motor")
-        ),
-
-        "motorVoltage": motor_voltage,
-        "ratedVoltage": motor_voltage,
-
-        "ncAuxSafe": data["ncAuxSafe"],
-        "zeroVoltageSafe": data["zeroVoltageSafe"],
-        "safetyOK": safety_ok,
-
-        "employeeId": str(
-            data.get("employeeId", "N/A")
-        ),
-
-        "operatorName": str(
-            data.get(
-                "operatorName",
-                "Arduino Operator"
-            )
-        ),
-
-        "dataSource": "ARDUINO_MANUAL_ENTRY",
-        "testMode": False,
-    }
-
-    # -------------------------------------------------
-    # SAFETY FAILURE
-    # -------------------------------------------------
-
-    if not safety_ok:
-
-        record["status"] = "SAFETY INTERLOCK FAILED"
-
-        record["message"] = (
-            "Insulation resistance testing was blocked "
-            "because safety verification failed."
-        )
-
-        return record
-
-    # -------------------------------------------------
-    # MEASUREMENT VALIDATION
-    # -------------------------------------------------
-
-    missing_ir = [
-        field
-        for field in IR_FIELDS
-        if field not in values
-    ]
-
-    if missing_ir:
-        raise ValueError(
-            "Missing IR measurements: "
-            + ", ".join(missing_ir)
-        )
-
-    test_voltage = values.get("testVoltage")
-
-    if test_voltage is None or test_voltage <= 0:
-        raise ValueError(
-            "testVoltage must be greater than zero."
-        )
-
-    readings = {}
-
-    for field in IR_FIELDS:
-
-        reading = values[field]
-
-        if reading < 0:
-            raise ValueError(
-                f"{field} cannot be negative."
-            )
-
-        readings[field] = reading
-
-    # -------------------------------------------------
-    # IR SUMMARY
-    # -------------------------------------------------
-
-    minimum_ir = min(readings.values())
-
-    average_ir = (
-        sum(readings.values()) / len(readings)
-    )
-
-    # IEEE Std 43-2013 reference:
-    # IRmin = kV + 1 MOhm
-    #
-    # This is a reference comparison only.
-    # No temperature correction is applied.
-
-    threshold_ir = (
-        motor_voltage / 1000.0
-    ) + 1.0
-
-    if minimum_ir >= threshold_ir:
-        status = "NORMAL"
-
-    else:
-        status = "MAINTENANCE ALERT"
-
-    # -------------------------------------------------
-    # COMPLETE RECORD
-    # -------------------------------------------------
-
-    record.update({
-
-        "testVoltage": test_voltage,
-
-        "rawIR": minimum_ir,
-
-        "minimumIR": minimum_ir,
-
-        "averageIR": round(
-            average_ir,
-            3
-        ),
-
-        "thresholdIR": round(
-            threshold_ir,
-            3
-        ),
-
-        "status": status,
-
-    })
-
-    record.update(readings)
-
-    # Dashboard-friendly measurement names.
-    record.update({
-        "irL1L2": readings["raw_ab"],
-        "irL2L3": readings["raw_bc"],
-        "irL3L1": readings["raw_ca"],
-        "irL1G": readings["raw_ag"],
-        "irL2G": readings["raw_bg"],
-        "irL3G": readings["raw_cg"],
-    })
-
+    record = dict(data)
+    if "timestamp" not in record:
+        record["timestamp"] = datetime.now(
+            timezone.utc
+        ).isoformat().replace("+00:00", "Z")
     return record
 
 
@@ -704,24 +455,16 @@ def run_gateway():
                                 "Firebase synchronization successful."
                             )
 
-                            print(
-                                f"Motor: {record['motorName']}"
-                            )
-
-                            print(
-                                f"Status: {record['status']}"
-                            )
-
-                            print(
-                                f"Timestamp: {record['timestamp']}"
-                            )
-
-                            if "minimumIR" in record:
-
+                            if "motorName" in record:
                                 print(
-                                    f"Minimum IR: "
-                                    f"{record['minimumIR']} MOhm"
+                                    f"Motor: {record['motorName']}"
                                 )
+
+                            if "status" in record:
+                                print(f"Status: {record['status']}")
+
+                            if "timestamp" in record:
+                                print(f"Timestamp: {record['timestamp']}")
 
                             print()
 

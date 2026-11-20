@@ -114,14 +114,14 @@ class EmployeeProtocolTests(unittest.TestCase):
         self.assertTrue(authenticate_employee("EMP-2026-012", "123456789012", session))
 
     def test_test_record_keeps_authenticated_operator_identity(self):
-        record = build_log_record({
+        data = {
             "motorId": "motor-001",
             "motorName": "Pump 1",
             "motorVoltage": 480,
             "testVoltage": 1000,
-            "ncAuxSafe": True,
+            "ncAuxSafe": False,
             "zeroVoltageSafe": True,
-            "raw_ab": 2.4,
+            "raw_ab": "2.400",
             "raw_bc": 2.5,
             "raw_ca": 2.6,
             "raw_ag": 2.7,
@@ -129,10 +129,29 @@ class EmployeeProtocolTests(unittest.TestCase):
             "raw_cg": 2.9,
             "employeeId": "EMP-2026-014",
             "operatorName": "Ari Tech",
-        })
+            "timestamp": "2026-11-20T10:00:00Z",
+        }
+        record = build_log_record(data)
 
+        self.assertEqual(record, data)
+        self.assertIsNot(record, data)
+        self.assertEqual(record["raw_ab"], "2.400")
         self.assertEqual(record["employeeId"], "EMP-2026-014")
         self.assertEqual(record["operatorName"], "Ari Tech")
+        self.assertNotIn("minimumIR", record)
+        self.assertNotIn("averageIR", record)
+        self.assertNotIn("thresholdIR", record)
+        self.assertNotIn("status", record)
+
+    def test_adds_timestamp_without_changing_received_values(self):
+        data = {"motorId": "motor-001", "raw_ab": "2.400"}
+
+        record = build_log_record(data)
+
+        self.assertEqual(record["motorId"], "motor-001")
+        self.assertEqual(record["raw_ab"], "2.400")
+        self.assertEqual(set(record) - set(data), {"timestamp"})
+        self.assertTrue(record["timestamp"].endswith("Z"))
 
 
 if __name__ == "__main__":
