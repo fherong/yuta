@@ -43,6 +43,9 @@ export function formatTelemetryLog(item) {
     && item.operatorName !== undefined
   );
   const rawReading = (field, fallback) => {
+    if (item.source === "ocr" && item[`${field}_GOhm`] != null) {
+      return item[`${field}_GOhm`];
+    }
     if (item[field] !== undefined && item[field] !== null) return item[field];
     if (item.rawIR !== undefined && item.rawIR !== null) return item.rawIR;
     return isArduinoManualRecord ? "" : fallback;
@@ -89,6 +92,7 @@ export function formatTelemetryLog(item) {
     motor_status: item.status ?? (
       isArduinoManualRecord ? getArduinoManualStatus(item) : "NORMAL"
     ),
+    reading_unit: item.source === "ocr" ? "GΩ" : "MΩ",
     operator_name: item.operatorName ?? (isArduinoManualRecord ? "" : "Python Gateway OCR"),
     employee_id: getEmployeeId(item),
     testDate,

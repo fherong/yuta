@@ -1,106 +1,237 @@
+import json
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from gateway import (
-    FIREBASE_DATABASE_URL,
-    build_log_record,
-    run_gateway,
-    sync_to_firebase,
+    OCR_FIELDS,
+    _handle_capture_event,
+    build_ocr_test_record,
+    capture_last_stable_reading,
+    parse_ut501a_reading,
+    run_ocr_gateway,
 )
+from gatewayy import TelemetryQueue
 
 
-class BuildLogRecordTests(unittest.TestCase):
-    def setUp(self):
-        self.message = {
+class OCRReadingTests(unittest.TestCase):
+    def test_parses_a_single_ut501a_reading(self):
+        self.assertEqual(parse_ut501a_reading(" 1,25 "), 1.25)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            parse_ut501a_reading("OL")
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            parse_ut501a_reading("1.2 500")
+
+    def test_builds_record_with_raw_gohm_and_mohm_values_for_status(self):
+        data = {
             "motorId": "motor-001",
-            "rawIR": 2.4,
-            "temperatureC": 40,
-            "testVoltage": 1000,
+            "motorName": "Pump 1",
             "motorVoltage": 480,
+            "testVoltage": 1000,
+            "ncAuxSafe": True,
+            "zeroVoltageSafe": True,
+            "employeeId": "EMP-2026-014",
+            "operatorName": "Ari Tech",
+            "minutes": 6,
+        }
+        captures = dict(zip(OCR_FIELDS, (1.25, 1.5, 1.75, 2.0, 2.25, 2.5)))
+
+        record = build_ocr_test_record(
+            data,
+            captures,
+            timestamp="2026-11-20T10:00:00Z",
+        )
+
+        self.assertEqual(record["source"], "ocr")
+        self.assertEqual(record["measurementUnit"], "GΩ")
+        self.assertEqual(record["raw_ab_GOhm"], 1.25)
+        self.assertEqual(record["raw_ab"], 1250)
+        self.assertEqual(record["raw_cg_GOhm"], 2.5)
+        self.assertEqual(record["raw_cg"], 2500)
+        self.assertEqual(record["timestamp"], "2026-11-20T10:00:00Z")
+        self.assertNotIn("status", record)
+        self.assertNotIn("temperatureC", record)
+
+    def test_safety_failure_does_not_require_ocr_measurements(self):
+        data = {
+            "motorId": "motor-001",
+            "motorVoltage": 480,
+            "ncAuxSafe": False,
+            "zeroVoltageSafe": True,
+            "employeeId": "EMP-2026-014",
+            "operatorName": "Ari Tech",
+        }
+
+        record = build_ocr_test_record(data, {})
+
+        self.assertEqual(record["source"], "ocr")
+        self.assertFalse(record["ncAuxSafe"])
+        self.assertNotIn("raw_ab", record)
+
+    def test_rejects_safe_test_without_all_six_captures(self):
+        data = {
+            "motorId": "motor-001",
+            "motorVoltage": 480,
+            "testVoltage": 1000,
             "ncAuxSafe": True,
             "zeroVoltageSafe": True,
         }
 
-    def test_builds_website_log_record(self):
-        record = build_log_record(self.message, timestamp="2026-01-01T00:00:00Z")
+        with self.assertRaisesRegex(ValueError, "All six"):
+            build_ocr_test_record(data, {"raw_ab": 1.25})
 
-        self.assertEqual(record["motorId"], "motor-001")
-        self.assertEqual(record["correctedIR"], 2.4)
-        self.assertEqual(record["thresholdIR"], 1.48)
-        self.assertTrue(record["safetyOK"])
-        self.assertEqual(record["status"], "NORMAL")
-        self.assertEqual(record["timestamp"], "2026-01-01T00:00:00Z")
+    def test_capture_keeps_the_latest_stable_value_in_the_window(self):
+        class Clock:
+            now = 0
 
-    def test_keeps_unsafe_interlock_in_log(self):
-        self.message["ncAuxSafe"] = False
+            def monotonic(self):
+                return self.now
 
-        record = build_log_record(self.message)
+            def sleep(self, duration):
+                self.now += duration
 
-        self.assertFalse(record["safetyOK"])
-        self.assertEqual(record["status"], "SAFETY INTERLOCK FAILED")
+        class Camera:
+            frame = 0
 
-    def test_rejects_missing_required_values(self):
-        del self.message["motorId"]
+            def read(self):
+                self.frame += 1
+                return True, self.frame
 
-        with self.assertRaisesRegex(ValueError, "motorId"):
-            build_log_record(self.message)
-
-    def test_rejects_non_boolean_safety_value(self):
-        self.message["zeroVoltageSafe"] = "yes"
-
-        with self.assertRaisesRegex(ValueError, "JSON boolean"):
-            build_log_record(self.message)
-
-    def test_rejects_non_finite_measurement(self):
-        self.message["rawIR"] = float("nan")
-
-        with self.assertRaisesRegex(ValueError, "finite number"):
-            build_log_record(self.message)
-
-    def test_rejects_non_finite_calculation(self):
-        self.message["rawIR"] = 1.7e308
-        self.message["temperatureC"] = 0
-
-        with self.assertRaisesRegex(ValueError, "calculated IR"):
-            build_log_record(self.message)
-
-    def test_syncs_live_and_history_records(self):
-        session = Mock()
-        record = build_log_record(self.message)
-
-        sync_to_firebase(record, session, "test-token")
-
-        session.put.assert_called_once_with(
-            f"{FIREBASE_DATABASE_URL}/live.json",
-            params={"auth": "test-token"},
-            json=record,
-            timeout=10,
-        )
-        session.post.assert_called_once_with(
-            f"{FIREBASE_DATABASE_URL}/history.json",
-            params={"auth": "test-token"},
-            json=record,
-            timeout=10,
+        clock = Clock()
+        readings = ["1.0"] * 4 + ["2.0"] * 4
+        value = capture_last_stable_reading(
+            Camera(),
+            lambda frame: readings[frame - 1],
+            duration=2,
+            sample_interval=0.25,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
         )
 
-    def test_retries_serial_connection_until_arduino_is_ready(self):
-        class SerialException(Exception):
-            pass
+        self.assertEqual(value, 2.0)
 
+    def test_capture_fails_when_no_four_samples_are_within_tolerance(self):
+        class Clock:
+            now = 0
+
+            def monotonic(self):
+                return self.now
+
+            def sleep(self, duration):
+                self.now += duration
+
+        class Camera:
+            frame = 0
+
+            def read(self):
+                self.frame += 1
+                return True, self.frame
+
+        clock = Clock()
+        readings = ["1.0", "1.1"] * 4
+        with self.assertRaisesRegex(ValueError, "No stable"):
+            capture_last_stable_reading(
+                Camera(),
+                lambda frame: readings[frame - 1],
+                duration=2,
+                sample_interval=0.25,
+                monotonic=clock.monotonic,
+                sleep=clock.sleep,
+            )
+
+
+class OCRSerialFlowTests(unittest.TestCase):
+    def test_captures_six_positions_and_saves_camera_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = TelemetryQueue(f"{directory}/telemetry.sqlite3")
+            captures = dict(zip(OCR_FIELDS, (1.25, 1.5, 1.75, 2, 2.25, 2.5)))
+            arduino = Mock()
+            arduino.__enter__ = Mock(return_value=arduino)
+            arduino.__exit__ = Mock(return_value=False)
+            arduino.readline.side_effect = [
+                *[
+                    (
+                        json.dumps({
+                            "event": "ocr_capture_started",
+                            "motorId": "motor-001",
+                            "index": OCR_FIELDS.index(field),
+                        }) + "\n"
+                    ).encode()
+                    for field in OCR_FIELDS
+                ],
+                (
+                    json.dumps({
+                        "motorId": "motor-001",
+                        "motorName": "Pump 1",
+                        "motorVoltage": 480,
+                        "testVoltage": 1000,
+                        "ncAuxSafe": True,
+                        "zeroVoltageSafe": True,
+                        "employeeId": "EMP-2026-014",
+                        "operatorName": "Ari Tech",
+                        "minutes": 6,
+                    }) + "\n"
+                ).encode(),
+                KeyboardInterrupt,
+            ]
+            serial_module = SimpleNamespace(SerialException=Exception)
+            serial_module.Serial = Mock(return_value=arduino)
+            session = Mock()
+
+            with patch("gateway.time.sleep"), patch(
+                "gateway.capture_last_stable_reading",
+                side_effect=[captures[field] for field in OCR_FIELDS],
+            ):
+                run_ocr_gateway(
+                    serial_module,
+                    Exception,
+                    session,
+                    queue,
+                    Mock(),
+                    lambda frame: "",
+                )
+
+            responses = b"".join(call.args[0] for call in arduino.write.call_args_list)
+            for index, field in enumerate(OCR_FIELDS):
+                value = captures[field]
+                self.assertIn(f"OCR_RESULT|{index}|{value:.6f}\n".encode(), responses)
+            self.assertIn(b"ACK|SAVED\n", responses)
+
+            history_payload = session.put.call_args_list[-1].kwargs["json"]
+            for field, value in captures.items():
+                self.assertEqual(history_payload[f"{field}_GOhm"], value)
+                self.assertEqual(history_payload[field], value * 1000)
+            self.assertEqual(history_payload["employeeId"], "EMP-2026-014")
+            self.assertEqual(queue.pending_records(), [])
+
+    def test_failed_ocr_capture_returns_error_without_a_value(self):
         arduino = Mock()
-        arduino.__enter__ = Mock(return_value=arduino)
-        arduino.__exit__ = Mock(return_value=False)
-        arduino.readline.side_effect = KeyboardInterrupt
-        serial_module = SimpleNamespace(SerialException=SerialException)
-        serial_module.Serial = Mock(side_effect=[SerialException("not ready"), arduino])
+        pending = {
+            "motorId": "motor-001",
+            "captured": {},
+        }
+        message = {
+            "event": "ocr_capture_started",
+            "motorId": "motor-001",
+            "index": 0,
+        }
 
-        with patch("gateway.time.sleep") as sleep:
-            run_gateway(serial_module, Exception, Mock(), None)
+        with patch(
+            "gateway.capture_last_stable_reading",
+            side_effect=ValueError("No stable value"),
+        ):
+            result = _handle_capture_event(
+                arduino,
+                message,
+                pending,
+                Mock(),
+                lambda frame: "",
+            )
 
-        self.assertEqual(serial_module.Serial.call_count, 2)
-        sleep.assert_any_call(5)
-        sleep.assert_any_call(2)
+        self.assertIs(result, pending)
+        arduino.write.assert_called_once_with(b"OCR_ERROR|0\n")
+        self.assertEqual(pending["captured"], {})
 
 
 if __name__ == "__main__":

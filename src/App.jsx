@@ -900,12 +900,12 @@ export default function App() {
                           <td className="p-3">{getEmployeeId(log) || '—'}</td>
                           <td className="p-3 font-bold text-purple-900">{log.test_voltage}V</td>
                           <td className="p-3">{log.minutes} min</td>
-                          <td className="p-3">{log.ab_corrected} MΩ</td>
-                          <td className="p-3">{log.bc_corrected} MΩ</td>
-                          <td className="p-3">{log.ca_corrected} MΩ</td>
-                          <td className="p-3">{log.ag_corrected} MΩ</td>
-                          <td className="p-3">{log.bg_corrected} MΩ</td>
-                          <td className="p-3">{log.cg_corrected} MΩ</td>
+                          <td className="p-3">{log.ab_corrected} {log.reading_unit || "MΩ"}</td>
+                          <td className="p-3">{log.bc_corrected} {log.reading_unit || "MΩ"}</td>
+                          <td className="p-3">{log.ca_corrected} {log.reading_unit || "MΩ"}</td>
+                          <td className="p-3">{log.ag_corrected} {log.reading_unit || "MΩ"}</td>
+                          <td className="p-3">{log.bg_corrected} {log.reading_unit || "MΩ"}</td>
+                          <td className="p-3">{log.cg_corrected} {log.reading_unit || "MΩ"}</td>
                           <td className="p-3 font-bold text-emerald-800">{log.motor_status}</td>
                         </tr>
                       ))

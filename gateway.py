@@ -1,40 +1,20 @@
 import json
 import math
-import os
+import re
+import sqlite3
+import statistics
 import time
-from datetime import datetime, timezone
+from collections import deque
+
+import gatewayy
 
 
-FIREBASE_DATABASE_URL = os.getenv(
-    "FIREBASE_DATABASE_URL",
-    "https://yuta-db-default-rtdb.asia-southeast1.firebasedatabase.app",
-).rstrip("/")
-SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyACM0")
-BAUD_RATE = int(os.getenv("BAUD_RATE", "9600"))
-import serial
-import json
-import time
-import requests
-
-# Configuration (Adjust port and URL as needed for your setup)
-SERIAL_PORT = "/dev/cu.usbserial-110"  # or 'COM3' on Windows
-BAUD_RATE = 9600
-FIREBASE_URL = "https://yuta-telemetry-default-rtdb.firebaseio.com/telemetry.json"
-
-try:
-    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-    time.sleep(2)  # Allow Arduino connection to settle
-    print(f"Connected to serial port {SERIAL_PORT}")
-except Exception as e:
-    print(f"Failed to connect on {SERIAL_PORT}: {e}")
-    exit() 
-
-NUMERIC_FIELDS = (
-    "rawIR",
-    "temperatureC",
-    "testVoltage",
-    "motorVoltage",
-    "minutes",
+SERIAL_PORT = gatewayy.SERIAL_PORT
+BAUD_RATE = gatewayy.BAUD_RATE
+OCR_TEST_SECONDS = 60
+OCR_SAMPLE_INTERVAL = 0.5
+OCR_STABLE_SAMPLES = 4
+OCR_FIELDS = (
     "raw_ab",
     "raw_bc",
     "raw_ca",
@@ -42,180 +22,400 @@ NUMERIC_FIELDS = (
     "raw_bg",
     "raw_cg",
 )
-REQUIRED_FIELDS = (
-    "motorId",
-    "rawIR",
-    "temperatureC",
-    "testVoltage",
-    "motorVoltage",
-    "ncAuxSafe",
-    "zeroVoltageSafe",
-)
+OCR_NUMBER_PATTERN = re.compile(r"(?<![\d.])(?:\d+(?:\.\d*)?|\.\d+)(?![\d.])")
 
 
-def build_log_record(data, timestamp=None):
+def parse_ut501a_reading(text):
+    if not isinstance(text, str):
+        raise ValueError("OCR output must be text")
+
+    matches = OCR_NUMBER_PATTERN.findall(text.replace(",", "."))
+    if len(matches) != 1:
+        raise ValueError("OCR did not identify exactly one resistance value")
+
+    value = float(matches[0])
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("OCR resistance must be a finite non-negative number")
+    return value
+
+
+def read_ut501a_frame(frame, pytesseract_module):
+    if frame is None or not hasattr(frame, "shape") or len(frame.shape) < 2:
+        raise ValueError("Camera returned an invalid frame")
+
+    from PIL import Image, ImageOps
+
+    height, width = frame.shape[:2]
+    top, bottom = int(height * 0.2), int(height * 0.8)
+    left, right = int(width * 0.08), int(width * 0.92)
+    if bottom <= top or right <= left:
+        raise ValueError("Camera frame is too small for OCR")
+
+    image = Image.fromarray(frame).crop((left, top, right, bottom)).convert("L")
+    image = ImageOps.autocontrast(image)
+    image = image.resize(
+        (image.width * 3, image.height * 3),
+        Image.Resampling.LANCZOS,
+    )
+    processed = image.point(lambda pixel: 255 if pixel > 150 else 0)
+    return pytesseract_module.image_to_string(
+        processed,
+        config="--psm 7 -c tessedit_char_whitelist=0123456789.,",
+    )
+
+
+def capture_last_stable_reading(
+    camera,
+    image_to_text,
+    duration=OCR_TEST_SECONDS,
+    sample_interval=OCR_SAMPLE_INTERVAL,
+    monotonic=time.monotonic,
+    sleep=time.sleep,
+):
+    deadline = monotonic() + duration
+    samples = deque(maxlen=OCR_STABLE_SAMPLES)
+    latest_stable = None
+
+    while monotonic() < deadline:
+        if hasattr(camera, "capture_array"):
+            frame = camera.capture_array()
+        else:
+            success, frame = camera.read()
+            if not success:
+                raise RuntimeError("Unable to read a frame from the Pi camera")
+
+        try:
+            samples.append(parse_ut501a_reading(image_to_text(frame)))
+        except ValueError:
+            samples.clear()
+        else:
+            if len(samples) == OCR_STABLE_SAMPLES:
+                low, high = min(samples), max(samples)
+                tolerance = max(0.0001, statistics.median(samples) * 0.005)
+                if high - low <= tolerance:
+                    latest_stable = samples[-1]
+
+        sleep(min(sample_interval, max(0, deadline - monotonic())))
+
+    if latest_stable is None:
+        raise ValueError("No stable UT501A resistance reading was detected during the test")
+    return latest_stable
+
+
+def build_ocr_test_record(data, captured_values, timestamp=None):
     if not isinstance(data, dict):
         raise ValueError("Arduino message must be a JSON object")
 
-    missing = [field for field in REQUIRED_FIELDS if field not in data]
+    required = ("motorId", "motorVoltage", "ncAuxSafe", "zeroVoltageSafe")
+    missing = [field for field in required if field not in data]
     if missing:
         raise ValueError(f"Missing required field(s): {', '.join(missing)}")
 
     motor_id = data["motorId"]
     if not isinstance(motor_id, str) or not motor_id.strip():
         raise ValueError("motorId must be a non-empty string")
-
     for field in ("ncAuxSafe", "zeroVoltageSafe"):
         if not isinstance(data[field], bool):
             raise ValueError(f"{field} must be a JSON boolean")
 
-    values = {}
-    for field in NUMERIC_FIELDS:
-        if field not in data:
-            continue
-        value = data[field]
-        if isinstance(value, bool):
-            raise ValueError(f"{field} must be a finite number")
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            raise ValueError(f"{field} must be a finite number") from None
-        if not math.isfinite(value):
-            raise ValueError(f"{field} must be a finite number")
-        values[field] = value
+    record_data = dict(data)
+    record_data["source"] = "ocr"
+    record_data["measurementType"] = "insulationResistance"
+    record_data["measurementUnit"] = "GΩ"
+    record = gatewayy.build_log_record(record_data)
+    if timestamp is not None:
+        record["timestamp"] = timestamp
 
-    if values["rawIR"] < 0 or values["temperatureC"] < -273.15:
-        raise ValueError("rawIR and temperatureC must be physically valid")
-    if values["testVoltage"] <= 0 or values["motorVoltage"] <= 0:
+    if not data["ncAuxSafe"] or not data["zeroVoltageSafe"]:
+        return record
+
+    if "testVoltage" not in data:
+        raise ValueError("Missing required field(s): testVoltage")
+    try:
+        test_voltage = float(data["testVoltage"])
+        motor_voltage = float(data["motorVoltage"])
+    except (TypeError, ValueError):
+        raise ValueError("testVoltage and motorVoltage must be finite numbers") from None
+    if (
+        not math.isfinite(test_voltage)
+        or test_voltage <= 0
+        or not math.isfinite(motor_voltage)
+        or motor_voltage <= 0
+    ):
         raise ValueError("testVoltage and motorVoltage must be greater than zero")
 
-    temperature = values["temperatureC"]
-    correction = (
-        0.5 ** ((temperature - 40.0) / 10.0)
-        if temperature >= 40.0
-        else 2.0 ** ((40.0 - temperature) / 10.0)
-    )
-    corrected_ir = round(values["rawIR"] * correction, 3)
-    threshold_ir = round(values["motorVoltage"] / 1000.0 + 1.0, 3)
-    if not math.isfinite(corrected_ir) or not math.isfinite(threshold_ir):
-        raise ValueError("calculated IR values must be finite")
-    safety_ok = data["ncAuxSafe"] and data["zeroVoltageSafe"]
+    if not isinstance(captured_values, dict) or set(captured_values) != set(OCR_FIELDS):
+        raise ValueError("All six stable OCR readings are required")
 
-    if not safety_ok:
-        status = "SAFETY INTERLOCK FAILED"
-    else:
-        status = "NORMAL" if corrected_ir >= threshold_ir else "MAINTENANCE ALERT"
-
-    record = {
-        "timestamp": timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "motorId": motor_id.strip(),
-        "rawIR": values["rawIR"],
-        "temperatureC": temperature,
-        "testVoltage": values["testVoltage"],
-        "motorVoltage": values["motorVoltage"],
-        "ratedVoltage": values["motorVoltage"],
-        "correctedIR": corrected_ir,
-        "thresholdIR": threshold_ir,
-        "ncAuxSafe": data["ncAuxSafe"],
-        "zeroVoltageSafe": data["zeroVoltageSafe"],
-        "safetyOK": safety_ok,
-        "status": status,
-        "employeeId": str(data.get("employeeId", "N/A")),
-        "operatorName": str(data.get("operatorName", "Arduino Operator")),
-    }
-
-    if "minutes" in values:
-        record["minutes"] = values["minutes"]
-    for field in ("raw_ab", "raw_bc", "raw_ca", "raw_ag", "raw_bg", "raw_cg"):
-        if field in values:
-            record[field] = values[field]
+    for field in OCR_FIELDS:
+        value_gohm = captured_values[field]
+        if isinstance(value_gohm, bool):
+            raise ValueError(f"{field} OCR reading must be a finite number")
+        try:
+            value_gohm = float(value_gohm)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field} OCR reading must be a finite number") from None
+        value_mohm = value_gohm * 1000
+        if not math.isfinite(value_gohm) or value_gohm < 0 or not math.isfinite(value_mohm):
+            raise ValueError(f"{field} OCR reading must be finite and non-negative")
+        record[f"{field}_GOhm"] = value_gohm
+        record[field] = value_mohm
 
     return record
 
 
-def sync_to_firebase(record, session, auth_token=None):
-    auth = {"auth": auth_token} if auth_token else None
-    live_response = session.put(
-        f"{FIREBASE_DATABASE_URL}/live.json",
-        params=auth,
-        json=record,
-        timeout=10,
+def _write_capture_result(arduino, index, value=None):
+    if value is None:
+        line = f"OCR_ERROR|{index}\n"
+    else:
+        line = f"OCR_RESULT|{index}|{value:.6f}\n"
+    arduino.write(line.encode("ascii"))
+    arduino.flush()
+
+
+def _save_record(arduino, record, queue, session):
+    record_id = queue.enqueue(record)
+    gatewayy.retry_pending_records(queue, session)
+    status = "QUEUED" if queue.contains(record_id) else "SAVED"
+    gatewayy.send_ack(arduino, status)
+    return record_id
+
+
+def _handle_capture_event(
+    arduino,
+    message,
+    pending_test,
+    camera,
+    image_to_text,
+):
+    index = message.get("index")
+    motor_id = message.get("motorId")
+    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(OCR_FIELDS):
+        if pending_test is None:
+            expected_index = 0
+        else:
+            expected_index = len(pending_test["captured"])
+            if expected_index >= len(OCR_FIELDS):
+                print("Ignoring OCR capture event after all six positions were captured")
+                return pending_test
+        _write_capture_result(arduino, expected_index)
+        print(f"Ignoring OCR start event with unsupported index: {index}")
+        return pending_test
+    field = OCR_FIELDS[index]
+    if not isinstance(motor_id, str) or not motor_id.strip():
+        _write_capture_result(arduino, index)
+        print("Ignoring OCR start event without a valid motorId")
+        return pending_test
+
+    if pending_test is None:
+        if index != 0:
+            _write_capture_result(arduino, index)
+            print("OCR capture sequence must start with raw_ab")
+            return None
+        pending_test = {"motorId": motor_id.strip(), "captured": {}}
+
+    if pending_test["motorId"] != motor_id.strip():
+        _write_capture_result(arduino, index)
+        print("OCR capture motorId changed before the test completed")
+        return pending_test
+
+    next_index = len(pending_test["captured"])
+    if next_index >= len(OCR_FIELDS) or field != OCR_FIELDS[next_index]:
+        _write_capture_result(arduino, index)
+        print(f"OCR capture out of order: expected {OCR_FIELDS[next_index] if next_index < len(OCR_FIELDS) else 'test result'}")
+        return pending_test
+
+    print(
+        f"Capturing {field} for motor {motor_id}; "
+        f"camera window is {OCR_TEST_SECONDS} seconds..."
     )
-    live_response.raise_for_status()
+    try:
+        value_gohm = capture_last_stable_reading(camera, image_to_text)
+    except (OSError, RuntimeError, ValueError) as error:
+        _write_capture_result(arduino, index)
+        print(f"OCR capture failed for {field}: {error}")
+        return pending_test
 
-    history_response = session.post(
-        f"{FIREBASE_DATABASE_URL}/history.json",
-        params=auth,
-        json=record,
-        timeout=10,
-    )
-    history_response.raise_for_status()
+    pending_test["captured"][field] = value_gohm
+    _write_capture_result(arduino, index, value_gohm)
+    print(f"Captured final stable {field}: {value_gohm:g} GΩ")
+    return pending_test
 
 
-def run_gateway(serial_module, request_exception, session, auth_token):
+def run_ocr_gateway(
+    serial_module,
+    request_exception,
+    session,
+    queue,
+    camera,
+    image_to_text,
+    motor_session=None,
+):
+    pending_test = None
+    next_retry = 0
+
     try:
         while True:
+            if time.monotonic() >= next_retry:
+                gatewayy.retry_pending_records(queue, session)
+                next_retry = time.monotonic() + gatewayy.QUEUE_RETRY_INTERVAL
+
             try:
-                with serial_module.Serial(SERIAL_PORT, BAUD_RATE, timeout=1) as arduino:
+                with serial_module.Serial(
+                    SERIAL_PORT,
+                    BAUD_RATE,
+                    timeout=gatewayy.SERIAL_TIMEOUT,
+                ) as arduino:
                     time.sleep(2)
                     print(f"Connected to Arduino on {SERIAL_PORT} at {BAUD_RATE} baud")
-                    print("Waiting for one JSON log record per serial line...")
+                    print("Waiting for OCR capture events from the Arduino...")
 
                     while True:
-                        line = arduino.readline().decode("utf-8", errors="replace").strip()
+                        raw_line = arduino.readline()
+                        if time.monotonic() >= next_retry:
+                            gatewayy.retry_pending_records(queue, session)
+                            next_retry = time.monotonic() + gatewayy.QUEUE_RETRY_INTERVAL
+                        if not raw_line:
+                            continue
+
+                        line = raw_line.decode("utf-8", errors="replace").strip()
                         if not line:
                             continue
-                        if not line.startswith("{"):
-                            print(f"Ignoring Arduino output: {line}")
+
+                        if line == "LIST?":
+                            try:
+                                gatewayy.send_motor_list(arduino, motor_session or session)
+                            except request_exception as error:
+                                print(f"Firebase motor retrieval failed: {error}")
+                                arduino.write(b"END\n")
+                                arduino.flush()
+                            continue
+
+                        if line == "EMPLOYEES?":
+                            try:
+                                gatewayy.send_employee_list(arduino, session)
+                            except request_exception as error:
+                                print(f"Firebase employee retrieval failed: {error}")
+                                arduino.write(b"EMPLOYEE_ERROR|UNAVAILABLE\nEND\n")
+                                arduino.flush()
+                            continue
+
+                        if line.startswith("LOGIN|"):
+                            parts = line.split("|", 2)
+                            authenticated = False
+                            if len(parts) == 3:
+                                try:
+                                    authenticated = gatewayy.authenticate_employee(
+                                        parts[1],
+                                        parts[2],
+                                        session,
+                                    )
+                                except request_exception as error:
+                                    print(f"Employee authentication failed: {error}")
+                            arduino.write(
+                                b"LOGIN|OK\n" if authenticated else b"LOGIN|ERROR\n"
+                            )
+                            arduino.flush()
                             continue
 
                         try:
-                            data = json.loads(line)
-                            record = build_log_record(data)
-                            sync_to_firebase(record, session, auth_token)
-                            print(
-                                f"Logged motor {record['motorId']} | "
-                                f"{record['status']} | {record['timestamp']}"
+                            message = json.loads(line)
+                        except json.JSONDecodeError:
+                            print(f"Ignoring Arduino output: {line}")
+                            continue
+                        if not isinstance(message, dict):
+                            continue
+
+                        event = message.get("event")
+                        if event == "test_cancelled":
+                            pending_test = None
+                            print("OCR test cancelled by Arduino")
+                            continue
+                        if event == "ocr_capture_started":
+                            pending_test = _handle_capture_event(
+                                arduino,
+                                message,
+                                pending_test,
+                                camera,
+                                image_to_text,
                             )
-                        except (json.JSONDecodeError, ValueError) as error:
-                            print(f"Invalid Arduino record: {error}")
-                        except request_exception as error:
-                            print(f"Firebase sync failed; record was not confirmed: {error}")
+                            continue
+                        if event is not None:
+                            print(f"Ignoring unsupported Arduino event: {event}")
+                            continue
+
+                        try:
+                            if message.get("ncAuxSafe") is False or message.get("zeroVoltageSafe") is False:
+                                record = build_ocr_test_record(message, {})
+                                _save_record(arduino, record, queue, session)
+                                pending_test = None
+                                print(f"Saved safety failure for motor {record['motorId']}")
+                                continue
+
+                            if pending_test is None:
+                                raise ValueError("Arduino result arrived without OCR captures")
+                            if message.get("motorId") != pending_test["motorId"]:
+                                raise ValueError("Arduino result motorId does not match OCR captures")
+
+                            record = build_ocr_test_record(
+                                message,
+                                pending_test["captured"],
+                            )
+                            _save_record(arduino, record, queue, session)
+                            pending_test = None
+                            print(
+                                f"Saved six OCR readings for motor {record['motorId']} "
+                                "to the local queue"
+                            )
+                        except (ValueError, sqlite3.Error) as error:
+                            pending_test = None
+                            print(f"Arduino OCR result rejected: {error}")
+                            gatewayy.send_ack(arduino, "ERROR", str(error))
             except serial_module.SerialException as error:
+                pending_test = None
                 print(
                     f"Arduino serial port {SERIAL_PORT} unavailable: {error}. "
                     "Retrying in 5 seconds..."
                 )
-                time.sleep(5)
+                time.sleep(gatewayy.RECONNECT_DELAY)
     except KeyboardInterrupt:
-        print("\nGateway stopped.")
+        print("\nOCR gateway stopped.")
 
 
 def main():
-    import serial
+    import pytesseract
     import requests
+    import serial
+    from picamera2 import Picamera2
 
-    auth_token = os.getenv("FIREBASE_AUTH_TOKEN")
-    session = requests.Session()
-    run_gateway(serial, requests.RequestException, session, auth_token)
+    pytesseract.get_tesseract_version()
+    camera = Picamera2()
+    camera_started = False
+    try:
+        camera.configure(
+            camera.create_video_configuration(
+                main={"size": (1280, 720), "format": "RGB888"},
+            )
+        )
+        camera.start()
+        camera_started = True
+        time.sleep(2)
+
+        session = requests.Session()
+        queue = gatewayy.TelemetryQueue(gatewayy.QUEUE_DB_PATH)
+        run_ocr_gateway(
+            serial,
+            requests.RequestException,
+            session,
+            queue,
+            camera,
+            lambda frame: read_ut501a_frame(frame, pytesseract),
+        )
+    finally:
+        if camera_started:
+            camera.stop()
+        camera.close()
 
 
 if __name__ == "__main__":
     main()
-        if ser.in_waiting > 0:
-            raw_line = ser.readline().decode('utf-8', errors='ignore').strip()
-
-            if raw_line.startswith("{") and raw_line.endswith("}"):
-                data = json.loads(raw_line)
-                print(f"\nReceived Telemetry: {data}")
-                
-                response = requests.put(FIREBASE_URL, json=data)
-                
-                if response.status_code == 200:
-                    print("Status: Successfully synced to Firebase!")
-                else:
-                    print(f"Firebase Error: {response.status_code}\n{response.text}")
-    except Exception as err:
-        print(f"Error: {err}")
-        
-    time.sleep(0.05)

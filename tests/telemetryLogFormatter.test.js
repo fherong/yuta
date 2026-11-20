@@ -87,6 +87,34 @@ test("shows maintenance when any raw reading is below 5 MOhm", () => {
   assert.equal(record.ca_corrected, 4.99);
 });
 
+test("displays OCR readings in GOhm while deriving status from MOhm values", () => {
+  const record = formatTelemetryLog({
+    source: "ocr",
+    measurementUnit: "GΩ",
+    employeeId: "EMP-2026-014",
+    operatorName: "Ari Tech",
+    ncAuxSafe: true,
+    zeroVoltageSafe: true,
+    raw_ab: 1250,
+    raw_bc: 1500,
+    raw_ca: 4.9,
+    raw_ag: 2000,
+    raw_bg: 2250,
+    raw_cg: 2500,
+    raw_ab_GOhm: 1.25,
+    raw_bc_GOhm: 1.5,
+    raw_ca_GOhm: 0.0049,
+    raw_ag_GOhm: 2,
+    raw_bg_GOhm: 2.25,
+    raw_cg_GOhm: 2.5,
+  });
+
+  assert.equal(record.ab_corrected, 1.25);
+  assert.equal(record.ca_corrected, 0.0049);
+  assert.equal(record.reading_unit, "GΩ");
+  assert.equal(record.motor_status, "MAINTENANCE ALERT");
+});
+
 test("reports a failed safety interlock without requiring measurements", () => {
   const record = formatTelemetryLog({
     motorId: "motor-001",

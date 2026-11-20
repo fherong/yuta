@@ -1,39 +1,62 @@
 # YUTA Telemetry
 
-## Raspberry Pi Arduino gateway
+## Raspberry Pi gateways
 
-`gatewayy.py` runs on the Raspberry Pi for manual Arduino testing. It provides the motor list, employee login, and telemetry sync used by the keypad/LCD sketch.
+Use `gateway.py` with the OCR Arduino sketch, or `gatewayy.py` with the manual-entry sketch. Both provide the motor list and employee login, and both persist completed records in the SQLite queue on the Pi's SD card before syncing to Firebase.
 
-Install the Python dependencies on the Pi:
+### UT501A camera OCR
 
-```bash
-python3 -m pip install -r requirements.txt
-```
-
-Connect the Arduino and run the gateway manually to test it:
+Connect a Raspberry Pi camera module to the Pi and frame the UNI-T UT501A display. Install the camera and OCR system packages:
 
 ```bash
-SERIAL_PORT=/dev/ttyACM0 python3 gatewayy.py
+sudo apt install python3-picamera2 tesseract-ocr python3-venv
 ```
 
-Set `SERIAL_PORT` to the Arduino's actual device (for example `/dev/ttyUSB0`) and `BAUD_RATE` to match the Arduino sketch. The default baud rate is `9600`. If the Realtime Database requires an auth token, set `FIREBASE_AUTH_TOKEN` in the environment. `FIREBASE_DATABASE_URL` can also be set to the database's base URL.
+Create a virtual environment that can access Raspberry Pi's system Picamera2 package, then install the project dependencies:
 
-The Arduino sends one JSON object followed by a newline for each test. A completed safe test includes `motorId`, `motorName`, `motorVoltage`, `testVoltage`, the two boolean safety values, all six readings (`raw_ab`, `raw_bc`, `raw_ca`, `raw_ag`, `raw_bg`, `raw_cg`), and the employee ID and operator name from the LCD login. The gateway writes the received fields to `/live` and `/history` without converting measurements or deriving status, safety, minimum/average IR, or threshold values. It adds a UTC `timestamp` only when the Arduino message does not include one.
+```bash
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -r requirements.txt
+```
 
-### LCD employee login
+Upload [arduino/YUTA_Arduino_OCR.ino](arduino/YUTA_Arduino_OCR.ino) to the Arduino Mega 2560 and run the OCR gateway:
 
-Upload [`arduino/YUTA_Arduino.ino`](arduino/YUTA_Arduino.ino) to the Arduino Mega. On startup, the tester requests employees with the `Employee` role and an 8-12 digit PIN from Realtime Database. The LCD shows each employee name with the last three numeric digits of their employee ID. The operator selects their name, enters the PIN on the keypad, and the Pi verifies it against the current account before enabling tests. PINs are not included in the employee list or gateway logs. A Firebase connection is required to log in; authentication fails closed if the Pi cannot verify the account. Existing accounts with shorter PINs must have their PIN reset in Settings before they can log in on the tester. Press `C` on the ready screen to switch operators. Each submitted record includes the authenticated employee ID and name.
+```bash
+SERIAL_PORT=/dev/ttyACM0 .venv/bin/python gateway.py
+```
+
+The sketch requests one camera capture for each of the six winding positions. Each capture lasts 60 seconds; four consecutive OCR samples must agree within 0.5%, and the latest stable sample in that window is kept. The LCD shows the captured GΩ value for review before the final safety check and save. If no stable value is found, the operator can retry that position or cancel the test.
+
+The OCR parser reads the UT501A's numeric display and treats it as GΩ, so use the tester's GΩ range for these captures.
+
+OCR values are kept in `raw_ab_GOhm` through `raw_cg_GOhm` as read. Corresponding `raw_ab` through `raw_cg` values are stored in MΩ so the website can apply its existing `<5 MΩ` maintenance rule. The website displays the captured GΩ values. OCR does not invent temperature, status, or safety values.
+
+### Manual Arduino telemetry
+
+Use the separate manual sketch and gateway when readings are typed on the Arduino keypad:
+
+```bash
+SERIAL_PORT=/dev/ttyACM0 .venv/bin/python gatewayy.py
+```
+
+Upload [arduino/YUTA_Arduino.ino](arduino/YUTA_Arduino.ino) for this mode. Its six keypad readings pass to `gatewayy.py` unchanged.
+
+### Employee login and database configuration
+
+Both sketches request eligible employees at startup. The LCD shows each employee name with the last three numeric digits of their employee ID. The operator selects their name, enters the 8–12 digit PIN on the keypad, and the Pi verifies it against the current account before enabling tests. A Firebase connection is required to log in; authentication fails closed if the Pi cannot verify the account. Each submitted record includes the authenticated employee ID and name.
+
+Set `SERIAL_PORT` to the Arduino device (for example `/dev/ttyUSB0`) and `BAUD_RATE` to match the sketch; the default is `9600`. If the Realtime Database requires an auth token, set `FIREBASE_AUTH_TOKEN`. `FIREBASE_DATABASE_URL` can also be set to the database's base URL.
 
 ### Automatic startup in a monitorless box
 
-The gateway keeps retrying the serial connection if the Arduino is not ready yet or is unplugged, so it can start before the Arduino. To have it start automatically when the Pi boots, install the systemd service after installing the Python dependencies:
+The included systemd service runs the manual gateway (`gatewayy.py`). For OCR mode, change its `ExecStart` in `/etc/systemd/system/yuta-gateway.service` to `/home/YOUR_PI_USERNAME/yuta/.venv/bin/python /home/YOUR_PI_USERNAME/yuta/gateway.py`. Run only one gateway at a time because both use the same Arduino serial port.
 
 ```bash
 sudo cp deploy/yuta-gateway.service /etc/systemd/system/yuta-gateway.service
 sudo nano /etc/systemd/system/yuta-gateway.service
 ```
 
-In the service file, replace `YOUR_PI_USERNAME` with the Pi login name. The example expects the repository at `/home/<username>/yuta` and the virtual environment at `/home/<username>/yuta/.venv`; update `WorkingDirectory` and `ExecStart` if yours differ. Set `SERIAL_PORT` to the Arduino's actual device. Add the Pi user to the `dialout` group if needed, then reboot or log out and back in:
+In the service file, replace `YOUR_PI_USERNAME` with the Pi login name. The example expects the repository at `/home/<username>/yuta` and the virtual environment at `/home/<username>/yuta/.venv`; update `WorkingDirectory` and `ExecStart` if yours differ. Set `SERIAL_PORT` to the Arduino's actual device. Add the Pi user to the `dialout` group if needed:
 
 ```bash
 sudo usermod -aG dialout YOUR_PI_USERNAME
@@ -41,18 +64,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now yuta-gateway.service
 ```
 
-Check whether it is running and view its logs with:
+Check the service and logs with `systemctl status yuta-gateway.service` and `journalctl -u yuta-gateway.service -f`. The optional `/etc/yuta-gateway.env` file can hold `FIREBASE_AUTH_TOKEN=...`; keep it off the repository and restrict access to it.
 
-```bash
-systemctl status yuta-gateway.service
-journalctl -u yuta-gateway.service -f
-```
-
-The optional `/etc/yuta-gateway.env` file can hold `FIREBASE_AUTH_TOKEN=...` if database authentication is required. Keep that file off the repository and restrict access to it. With the service enabled, the Pi can run headlessly: after power returns, systemd starts the gateway and it waits/retries for the Arduino.
-
-Each Arduino test record is committed to a local SQLite queue before cloud sync. The default database is `~/.local/share/yuta-gateway/telemetry.sqlite3` on the Pi's local storage (normally its SD card); set `YUTA_QUEUE_DB_PATH` to use another path. The gateway retries pending records every five seconds and after restart. It removes a queued record only after both `/live` and `/history` accept it, and uses a stable history key so retries do not duplicate log entries. The LCD reports when a record is safely queued locally but still pending cloud sync.
-
-The employee list, motor list, and PIN verification still require Firebase. This queue covers a connection drop after the operator has logged in and the motor list has loaded; starting a new test while already offline is not supported.
+Each Arduino test record is committed to a local SQLite queue before cloud sync. The default database is `~/.local/share/yuta-gateway/telemetry.sqlite3` on the Pi's local storage (normally its SD card); set `YUTA_QUEUE_DB_PATH` to use another path. The gateway retries pending records every five seconds and after restart, and removes a queued record only after both `/live` and `/history` accept it. Employee and motor lists and PIN verification still require Firebase, so the Pi must be online before login and motor selection.
 
 ## Web application
 
