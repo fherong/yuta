@@ -92,6 +92,7 @@ def capture_last_stable_reading(
     sample_interval=OCR_SAMPLE_INTERVAL,
     monotonic=time.monotonic,
     sleep=time.sleep,
+    preview_frame=None,
 ):
     deadline = monotonic() + duration
     samples = deque(maxlen=OCR_STABLE_SAMPLES)
@@ -104,6 +105,9 @@ def capture_last_stable_reading(
             success, frame = camera.read()
             if not success:
                 raise RuntimeError("Unable to read a frame from the USB camera")
+
+        if preview_frame is not None:
+            preview_frame(frame)
 
         try:
             samples.append(parse_ut501a_reading(image_to_text(frame)))
@@ -208,6 +212,7 @@ def _handle_capture_event(
     pending_test,
     camera,
     image_to_text,
+    preview_frame=None,
 ):
     index = message.get("index")
     motor_id = message.get("motorId")
@@ -251,7 +256,11 @@ def _handle_capture_event(
         f"camera window is {OCR_TEST_SECONDS} seconds..."
     )
     try:
-        value_gohm = capture_last_stable_reading(camera, image_to_text)
+        value_gohm = capture_last_stable_reading(
+            camera,
+            image_to_text,
+            preview_frame=preview_frame,
+        )
     except (OSError, RuntimeError, ValueError) as error:
         _write_capture_result(arduino, index)
         print(f"OCR capture failed for {field}: {error}")
@@ -271,12 +280,17 @@ def run_ocr_gateway(
     camera,
     image_to_text,
     motor_session=None,
+    preview_frame=None,
 ):
     pending_test = None
     next_retry = 0
 
     try:
         while True:
+            if preview_frame is not None:
+                success, frame = camera.read()
+                if success:
+                    preview_frame(frame)
             if time.monotonic() >= next_retry:
                 gatewayy.retry_pending_records(queue, session)
                 next_retry = time.monotonic() + gatewayy.QUEUE_RETRY_INTERVAL
@@ -293,6 +307,10 @@ def run_ocr_gateway(
 
                     while True:
                         raw_line = arduino.readline()
+                        if preview_frame is not None:
+                            success, frame = camera.read()
+                            if success:
+                                preview_frame(frame)
                         if time.monotonic() >= next_retry:
                             gatewayy.retry_pending_records(queue, session)
                             next_retry = time.monotonic() + gatewayy.QUEUE_RETRY_INTERVAL
@@ -359,6 +377,7 @@ def run_ocr_gateway(
                                 pending_test,
                                 camera,
                                 image_to_text,
+                                preview_frame,
                             )
                             continue
                         if event is not None:
@@ -410,7 +429,25 @@ def main():
     import serial
 
     pytesseract.get_tesseract_version()
+    preview_setting = os.getenv("CAMERA_PREVIEW")
+    if preview_setting is None:
+        preview_enabled = bool(os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY"))
+    elif preview_setting.strip().lower() in ("1", "true", "yes", "on"):
+        preview_enabled = True
+    elif preview_setting.strip().lower() in ("0", "false", "no", "off"):
+        preview_enabled = False
+    else:
+        raise ValueError("CAMERA_PREVIEW must be 1 or 0")
+
+    if preview_enabled and not (os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY")):
+        raise RuntimeError("CAMERA_PREVIEW requires a desktop display session")
+
     camera = open_usb_camera(cv2)
+
+    def show_camera_frame(frame):
+        cv2.imshow("YUTA USB camera preview", frame)
+        cv2.waitKey(1)
+
     try:
         session = requests.Session()
         queue = gatewayy.TelemetryQueue(gatewayy.QUEUE_DB_PATH)
@@ -421,8 +458,11 @@ def main():
             queue,
             camera,
             lambda frame: read_ut501a_frame(frame, pytesseract),
+            preview_frame=show_camera_frame if preview_enabled else None,
         )
     finally:
+        if preview_enabled:
+            cv2.destroyAllWindows()
         camera.release()
 
 

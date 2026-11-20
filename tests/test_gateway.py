@@ -125,6 +125,7 @@ class OCRReadingTests(unittest.TestCase):
 
         clock = Clock()
         readings = ["1.0"] * 4 + ["2.0"] * 4
+        preview_frames = []
         value = capture_last_stable_reading(
             Camera(),
             lambda frame: readings[frame - 1],
@@ -132,9 +133,11 @@ class OCRReadingTests(unittest.TestCase):
             sample_interval=0.25,
             monotonic=clock.monotonic,
             sleep=clock.sleep,
+            preview_frame=preview_frames.append,
         )
 
         self.assertEqual(value, 2.0)
+        self.assertEqual(len(preview_frames), 8)
 
     def test_capture_fails_when_no_four_samples_are_within_tolerance(self):
         class Clock:
