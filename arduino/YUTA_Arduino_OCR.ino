@@ -19,9 +19,10 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 #define SERIAL_BAUD 9600
 #define MAX_MOTORS 20
 #define MAX_EMPLOYEES 25
+#define MOTOR_ID_LENGTH 20
 
 struct Motor {
-  char id[45];
+  char id[MOTOR_ID_LENGTH + 1];
   char name[35];
   float ratedVoltage;
 };
@@ -29,7 +30,6 @@ struct Motor {
 struct Employee {
   char id[45];
   char name[45];
-  char idSuffix[4];
 };
 
 Motor motors[MAX_MOTORS];
@@ -133,7 +133,7 @@ void processMotorLine(char* line) {
   *voltage = '\0';
   voltage++;
 
-  if (strlen(id) == 0 || strlen(name) == 0) return;
+  if (strlen(id) == 0 || strlen(id) > MOTOR_ID_LENGTH || strlen(name) == 0) return;
 
   for (int i = 0; i < motorCount; i++) {
     if (strcmp(motors[i].id, id) == 0) return;
@@ -329,10 +329,9 @@ void processEmployeeLine(char* line) {
   *name = '\0';
   name++;
 
-  char* idSuffix = strchr(name, '|');
-  if (!idSuffix) return;
-  *idSuffix = '\0';
-  idSuffix++;
+  char* suffix = strchr(name, '|');
+  if (!suffix) return;
+  *suffix = '\0';
 
   if (strlen(id) == 0 || strlen(name) == 0) return;
 
@@ -345,9 +344,6 @@ void processEmployeeLine(char* line) {
 
   strncpy(employees[employeeCount].name, name, sizeof(employees[employeeCount].name) - 1);
   employees[employeeCount].name[sizeof(employees[employeeCount].name) - 1] = '\0';
-
-  strncpy(employees[employeeCount].idSuffix, idSuffix, sizeof(employees[employeeCount].idSuffix) - 1);
-  employees[employeeCount].idSuffix[sizeof(employees[employeeCount].idSuffix) - 1] = '\0';
 
   employeeCount++;
 }
@@ -430,6 +426,25 @@ bool requestEmployeeList() {
   return true;
 }
 
+void formatEmployeeIdSuffix(const char* employeeIdValue, char suffix[4]) {
+  int digitCount = 0;
+
+  for (const char* character = employeeIdValue; *character; character++) {
+    if (*character < '0' || *character > '9') continue;
+
+    if (digitCount < 3) {
+      suffix[digitCount++] = *character;
+    } else {
+      suffix[0] = suffix[1];
+      suffix[1] = suffix[2];
+      suffix[2] = *character;
+    }
+  }
+
+  suffix[3] = '\0';
+  if (digitCount == 0) strcpy(suffix, "---");
+}
+
 void displayEmployeeList() {
   lcd.clear();
 
@@ -449,7 +464,9 @@ void displayEmployeeList() {
     lcd.print(String(employees[employeeIndex].name).substring(0, 13));
     lcd.setCursor(14, row + 1);
     lcd.print("ID:");
-    lcd.print(employees[employeeIndex].idSuffix);
+    char suffix[4];
+    formatEmployeeIdSuffix(employees[employeeIndex].id, suffix);
+    lcd.print(suffix);
   }
 }
 
@@ -518,9 +535,11 @@ bool loginOperator() {
       String pinMask = "";
       for (unsigned int i = 0; i < pin.length(); i++) pinMask += '*';
 
+      char suffix[4];
+      formatEmployeeIdSuffix(employees[employeeIndex].id, suffix);
       showMessage(
         "PIN: " + String(employees[employeeIndex].name).substring(0, 15),
-        "ID ending: " + String(employees[employeeIndex].idSuffix),
+        "ID ending: " + String(suffix),
         "PIN: " + pinMask,
         "# OK * DEL D BACK"
       );

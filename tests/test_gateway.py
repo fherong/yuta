@@ -81,6 +81,9 @@ class OCRReadingTests(unittest.TestCase):
                 self.width, self.height = size
                 return self
 
+            def filter(self, _filter):
+                return self
+
             def point(self, _transform):
                 return self
 
@@ -103,6 +106,42 @@ class OCRReadingTests(unittest.TestCase):
             "tessedit_char_whitelist=MG",
             pytesseract.image_to_string.call_args_list[1].kwargs["config"],
         )
+
+    def test_retries_thresholded_images_when_grayscale_ocr_is_unclear(self):
+        class Frame:
+            shape = (100, 120)
+
+        class Image:
+            width = 100
+            height = 60
+
+            def crop(self, _region):
+                return self
+
+            def convert(self, _mode):
+                return self
+
+            def resize(self, size, _resample):
+                self.width, self.height = size
+                return self
+
+            def filter(self, _filter):
+                return self
+
+            def point(self, _transform):
+                return self
+
+        pytesseract = Mock()
+        pytesseract.image_to_string.side_effect = ("", "", "110", "M")
+
+        with patch("PIL.Image.fromarray", return_value=Image()), patch(
+            "PIL.ImageOps.autocontrast",
+            side_effect=lambda value: value,
+        ):
+            text = read_ut501a_frame(Frame(), pytesseract)
+
+        self.assertEqual(text, "110 M")
+        self.assertEqual(pytesseract.image_to_string.call_count, 4)
 
     def test_builds_record_with_raw_gohm_and_mohm_values_for_status(self):
         data = {

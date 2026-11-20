@@ -67,7 +67,7 @@ def read_ut501a_frame(frame, pytesseract_module):
     if frame is None or not hasattr(frame, "shape") or len(frame.shape) < 2:
         raise ValueError("Camera returned an invalid frame")
 
-    from PIL import Image, ImageOps
+    from PIL import Image, ImageFilter, ImageOps
 
     height, width = frame.shape[:2]
     top, bottom = int(height * 0.2), int(height * 0.8)
@@ -83,24 +83,40 @@ def read_ut501a_frame(frame, pytesseract_module):
         (image.width * 3, image.height * 3),
         Image.Resampling.LANCZOS,
     )
-    processed = image.point(lambda pixel: 255 if pixel > 150 else 0)
-    number_text = pytesseract_module.image_to_string(
-        processed,
-        config="--psm 7 -c tessedit_char_whitelist=0123456789.,",
+    sharpened = image.filter(
+        ImageFilter.UnsharpMask(radius=1.5, percent=150, threshold=3)
     )
-    unit_region = processed.crop(
-        (
-            int(processed.width * 0.80),
-            int(processed.height * 0.2),
-            int(processed.width * 0.92),
-            int(processed.height * 0.8),
+    variants = (
+        sharpened,
+        image.point(lambda pixel: 255 if pixel > 120 else 0),
+        image.point(lambda pixel: 255 if pixel > 170 else 0),
+    )
+
+    last_result = ""
+    for processed in variants:
+        number_text = pytesseract_module.image_to_string(
+            processed,
+            config="--psm 7 -c tessedit_char_whitelist=0123456789.,",
         )
-    )
-    unit_text = pytesseract_module.image_to_string(
-        unit_region,
-        config="--psm 10 -c tessedit_char_whitelist=MG",
-    )
-    return f"{number_text} {unit_text}"
+        unit_region = processed.crop(
+            (
+                int(processed.width * 0.80),
+                int(processed.height * 0.2),
+                int(processed.width * 0.92),
+                int(processed.height * 0.8),
+            )
+        )
+        unit_text = pytesseract_module.image_to_string(
+            unit_region,
+            config="--psm 10 -c tessedit_char_whitelist=MG",
+        )
+        last_result = f"{number_text} {unit_text}"
+        try:
+            parse_ut501a_reading(last_result)
+        except ValueError:
+            continue
+        return last_result
+    return last_result
 
 
 def capture_last_stable_reading(
