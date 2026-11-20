@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import re
 import sqlite3
 import statistics
@@ -23,6 +24,24 @@ OCR_FIELDS = (
     "raw_cg",
 )
 OCR_NUMBER_PATTERN = re.compile(r"(?<![\d.])(?:\d+(?:\.\d*)?|\.\d+)(?![\d.])")
+
+
+def open_usb_camera(cv2_module, device=None):
+    configured_device = str(
+        device if device is not None else os.getenv("CAMERA_DEVICE", "0")
+    ).strip()
+    if not configured_device:
+        raise ValueError("CAMERA_DEVICE must be a camera index or device path")
+
+    camera_source = int(configured_device) if configured_device.isdecimal() else configured_device
+    camera = cv2_module.VideoCapture(camera_source)
+    if not camera.isOpened():
+        camera.release()
+        raise RuntimeError(
+            f"Could not open USB camera {configured_device}; "
+            "set CAMERA_DEVICE to its index or device path"
+        )
+    return camera
 
 
 def parse_ut501a_reading(text):
@@ -51,6 +70,8 @@ def read_ut501a_frame(frame, pytesseract_module):
     if bottom <= top or right <= left:
         raise ValueError("Camera frame is too small for OCR")
 
+    if len(frame.shape) == 3 and frame.shape[2] == 3:
+        frame = frame[:, :, ::-1].copy()
     image = Image.fromarray(frame).crop((left, top, right, bottom)).convert("L")
     image = ImageOps.autocontrast(image)
     image = image.resize(
@@ -82,7 +103,7 @@ def capture_last_stable_reading(
         else:
             success, frame = camera.read()
             if not success:
-                raise RuntimeError("Unable to read a frame from the Pi camera")
+                raise RuntimeError("Unable to read a frame from the USB camera")
 
         try:
             samples.append(parse_ut501a_reading(image_to_text(frame)))
@@ -383,24 +404,14 @@ def run_ocr_gateway(
 
 
 def main():
+    import cv2
     import pytesseract
     import requests
     import serial
-    from picamera2 import Picamera2
 
     pytesseract.get_tesseract_version()
-    camera = Picamera2()
-    camera_started = False
+    camera = open_usb_camera(cv2)
     try:
-        camera.configure(
-            camera.create_video_configuration(
-                main={"size": (1280, 720), "format": "RGB888"},
-            )
-        )
-        camera.start()
-        camera_started = True
-        time.sleep(2)
-
         session = requests.Session()
         queue = gatewayy.TelemetryQueue(gatewayy.QUEUE_DB_PATH)
         run_ocr_gateway(
@@ -412,9 +423,7 @@ def main():
             lambda frame: read_ut501a_frame(frame, pytesseract),
         )
     finally:
-        if camera_started:
-            camera.stop()
-        camera.close()
+        camera.release()
 
 
 if __name__ == "__main__":

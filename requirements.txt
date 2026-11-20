@@ -2,3 +2,4 @@ pyserial
 requests
 Pillow
 pytesseract
+opencv-python-headless

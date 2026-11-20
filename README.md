@@ -6,24 +6,26 @@ Use `gateway.py` with the OCR Arduino sketch, or `gatewayy.py` with the manual-e
 
 ### UT501A camera OCR
 
-Connect a Raspberry Pi camera module to the Pi and frame the UNI-T UT501A display. Install the camera and OCR system packages:
+Connect a USB camera to the Pi and frame the UNI-T UT501A display. Install Tesseract and the Python environment tools:
 
 ```bash
-sudo apt install python3-picamera2 tesseract-ocr python3-venv
+sudo apt install tesseract-ocr python3-venv
 ```
 
-Create a virtual environment that can access Raspberry Pi's system Picamera2 package, then install the project dependencies:
+Create a virtual environment and install the project dependencies:
 
 ```bash
-python3 -m venv --system-site-packages .venv
+python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
 Upload [arduino/YUTA_Arduino_OCR.ino](arduino/YUTA_Arduino_OCR.ino) to the Arduino Mega 2560 and run the OCR gateway:
 
 ```bash
-SERIAL_PORT=/dev/ttyACM0 .venv/bin/python gateway.py
+SERIAL_PORT=/dev/ttyACM0 CAMERA_DEVICE=0 .venv/bin/python gateway.py
 ```
+
+The default USB camera is index `0`; no model name is required. If it is not detected, check `/dev/video*` and set `CAMERA_DEVICE` to another index (such as `1`) or a device path (such as `/dev/video0`).
 
 The sketch requests one camera capture for each of the six winding positions. Each capture lasts 60 seconds; four consecutive OCR samples must agree within 0.5%, and the latest stable sample in that window is kept. The LCD shows the captured GΩ value for review before the final safety check and save. If no stable value is found, the operator can retry that position or cancel the test.
 

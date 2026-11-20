@@ -9,6 +9,7 @@ from gateway import (
     _handle_capture_event,
     build_ocr_test_record,
     capture_last_stable_reading,
+    open_usb_camera,
     parse_ut501a_reading,
     run_ocr_gateway,
 )
@@ -16,6 +17,30 @@ from gatewayy import TelemetryQueue
 
 
 class OCRReadingTests(unittest.TestCase):
+    def test_opens_default_usb_camera_by_index(self):
+        cv2 = Mock()
+        camera = Mock()
+        camera.isOpened.return_value = True
+        cv2.VideoCapture.return_value = camera
+
+        with patch("gateway.os.getenv", return_value="0"):
+            opened_camera = open_usb_camera(cv2)
+
+        self.assertIs(opened_camera, camera)
+        cv2.VideoCapture.assert_called_once_with(0)
+
+    def test_accepts_usb_device_path_and_releases_unavailable_camera(self):
+        cv2 = Mock()
+        camera = Mock()
+        camera.isOpened.return_value = False
+        cv2.VideoCapture.return_value = camera
+
+        with self.assertRaisesRegex(RuntimeError, "/dev/video1"):
+            open_usb_camera(cv2, "/dev/video1")
+
+        cv2.VideoCapture.assert_called_once_with("/dev/video1")
+        camera.release.assert_called_once_with()
+
     def test_parses_a_single_ut501a_reading(self):
         self.assertEqual(parse_ut501a_reading(" 1,25 "), 1.25)
         with self.assertRaisesRegex(ValueError, "exactly one"):
