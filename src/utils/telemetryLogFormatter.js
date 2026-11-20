@@ -1,5 +1,33 @@
 import { getEmployeeId } from "./employeeId.js";
 
+function getArduinoManualStatus(item) {
+  if (item.ncAuxSafe === false || item.zeroVoltageSafe === false) {
+    return "SAFETY INTERLOCK FAILED";
+  }
+  if (item.ncAuxSafe !== true || item.zeroVoltageSafe !== true) {
+    return "NOT PROVIDED";
+  }
+
+  const motorVoltage = Number(item.motorVoltage);
+  const readingFields = ["raw_ab", "raw_bc", "raw_ca", "raw_ag", "raw_bg", "raw_cg"];
+  if (!Number.isFinite(motorVoltage) || motorVoltage <= 0) {
+    return "NOT PROVIDED";
+  }
+
+  const readings = readingFields.map((field) => item[field]);
+  if (readings.some((reading) => reading === undefined || reading === null || reading === "")) {
+    return "NOT PROVIDED";
+  }
+
+  const numericReadings = readings.map(Number);
+  if (numericReadings.some((reading) => !Number.isFinite(reading) || reading < 0)) {
+    return "NOT PROVIDED";
+  }
+
+  const threshold = motorVoltage / 1000 + 1;
+  return Math.min(...numericReadings) >= threshold ? "NORMAL" : "MAINTENANCE ALERT";
+}
+
 export function formatTelemetryLog(item) {
   const testDate = item.timestamp
     ? new Date(item.timestamp).toLocaleString([], {
@@ -60,7 +88,9 @@ export function formatTelemetryLog(item) {
       : Number(item.testVoltage || item.test_voltage || item.ratedVoltage || 1000),
     minutes: isArduinoManualRecord ? (item.minutes ?? "") : Number(item.minutes || 1.0),
     ir_min: isArduinoManualRecord ? (item.thresholdIR ?? "") : Number(item.thresholdIR || 1.38),
-    motor_status: item.status ?? (isArduinoManualRecord ? "" : "NORMAL"),
+    motor_status: item.status ?? (
+      isArduinoManualRecord ? getArduinoManualStatus(item) : "NORMAL"
+    ),
     operator_name: item.operatorName ?? (isArduinoManualRecord ? "" : "Python Gateway OCR"),
     employee_id: getEmployeeId(item),
     testDate,
