@@ -17,33 +17,33 @@ export const Login = () => {
 
     // 1. Built-in Demo Credentials (Bypasses remote auth errors)
     if (cleanId === 'admin@yuta.com' || cleanId === 'ADMIN') {
-      try {
-        await login(cleanId, cleanPass, {
-          uid: 'admin-demo',
-          employeeId: 'EMP-ADM-001',
-          fullname: 'Plant Administrator',
-          role: 'Admin',
-          email: 'admin@yuta.com'
-        });
+      if (cleanPass !== 'password123') {
+        setError('INVALID SECURITY PIN');
         return;
-      } catch {
-        // Continue fallback if login() handles custom context state
       }
+      await login(cleanId, cleanPass, {
+        uid: 'demo-admin-01',
+        employeeId: 'EMP-ADM-001',
+        fullname: 'Plant Administrator',
+        role: 'Admin',
+        email: 'admin@yuta.com'
+      });
+      return;
     }
 
     if (cleanId === 'employee@yuta.com' || cleanId === 'EMPLOYEE') {
-      try {
-        await login(cleanId, cleanPass, {
-          uid: 'employee-demo',
-          employeeId: 'EMP-2026-001',
-          fullname: 'Plant Technician',
-          role: 'Employee',
-          email: 'employee@yuta.com'
-        });
+      if (cleanPass !== 'password123') {
+        setError('INVALID SECURITY PIN');
         return;
-      } catch {
-        // Continue fallback
       }
+      await login(cleanId, cleanPass, {
+        uid: 'demo-employee-01',
+        employeeId: 'EMP-2026-001',
+        fullname: 'Plant Technician',
+        role: 'Employee',
+        email: 'employee@yuta.com'
+      });
+      return;
     }
 
     // 2. Realtime Database /users/{employeeId} lookup
@@ -53,19 +53,21 @@ export const Login = () => {
 
       if (snapshot.exists()) {
         const userData = snapshot.val();
-        if (userData.pin && userData.pin !== cleanPass) {
-          setError('INVALID SECURITY PIN');
+        if (userData.pin) {
+          if (userData.pin !== cleanPass) {
+            setError('INVALID SECURITY PIN');
+            return;
+          }
+
+          await login(cleanId, cleanPass, {
+            uid: cleanId,
+            employeeId: userData.employeeId || cleanId,
+            fullname: userData.fullname || 'Technician',
+            role: userData.role || 'Employee',
+            email: userData.email || `${cleanId}@plant.local`
+          });
           return;
         }
-
-        await login(cleanId, cleanPass, {
-          uid: cleanId,
-          employeeId: userData.employeeId || cleanId,
-          fullname: userData.fullname || 'Technician',
-          role: userData.role || 'Employee',
-          email: userData.email || `${cleanId}@plant.local`
-        });
-        return;
       }
 
       // 3. Standard Firebase Auth fallback

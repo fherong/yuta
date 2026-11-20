@@ -6,12 +6,16 @@ import {
   subscribeToMotors,
   logTestReading, 
   createMotorAsset,
+  archiveMotorAsset,
+  archiveRegisteredUser,
   provisionUserWithId, 
+  updateRegisteredUser,
   fetchRegisteredUsers,
+  fetchArchivedItems,
   subscribeToLiveTelemetry,
   fetchTelemetryHistory
 } from './services/telemetryService';
-import { exportTelemetryToCSV, exportMaintenanceReportPDF } from './utils/reportGenerator';
+import { exportTelemetryToCSV, exportMaintenanceReportPDF, exportArchiveReportPDF } from './utils/reportGenerator';
 import { getEmployeeId } from './utils/employeeId';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -27,7 +31,8 @@ import {
   ShieldCheck,
   Users,
   LogOut as LogOutIcon,
-  Zap
+  Zap,
+  Archive
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 
@@ -89,6 +94,10 @@ export default function App() {
   const [liveTelemetry, setLiveTelemetry] = useState(null);
   const [telemetryLogs, setTelemetryLogs] = useState([]);
   const [registeredUsers, setRegisteredUsers] = useState([]);
+  const [archivedItems, setArchivedItems] = useState([]);
+  const [archiveError, setArchiveError] = useState('');
+  const [archiveMessage, setArchiveMessage] = useState('');
+  const [archivingItemId, setArchivingItemId] = useState(null);
 
   // Filter States
   const [lineFilterGroup, setLineFilterGroup] = useState('ALL'); // ALL, PHASE_TO_PHASE, PHASE_TO_GROUND
@@ -120,6 +129,9 @@ export default function App() {
   const [newFullname, setNewFullname] = useState('');
   const [newPin, setNewPin] = useState('1234');
   const [newRole, setNewRole] = useState('Employee');
+  const [editingUserId, setEditingUserId] = useState(null);
+  const [userFormError, setUserFormError] = useState('');
+  const [isSavingUser, setIsSavingUser] = useState(false);
   const [userCreatedMessage, setUserCreatedMessage] = useState('');
 
   const navItems = [
@@ -210,7 +222,12 @@ export default function App() {
 
     loadHistory();
     const interval = setInterval(loadHistory, 4000);
-    if (isAdmin) fetchRegisteredUsers().then(setRegisteredUsers).catch(console.error);
+    if (isAdmin) {
+      fetchRegisteredUsers().then(setRegisteredUsers).catch(console.error);
+      fetchArchivedItems()
+        .then(setArchivedItems)
+        .catch((error) => setArchiveError(error instanceof Error ? error.message : 'Unable to load archive records.'));
+    }
 
     return () => {
       unsubLive();
@@ -234,9 +251,13 @@ export default function App() {
   const filteredLogs = selectedMotor?.id === 'motor-mock'
     ? telemetryLogs
     : telemetryLogs.filter(l => l.motor_id === selectedMotor?.id);
-  const fleetPageCount = Math.max(1, Math.ceil(motors.length / FLEET_PAGE_SIZE));
+  const archivedMotorIds = new Set(
+    archivedItems.filter((item) => item.type === 'motor').map((item) => item.originalId)
+  );
+  const activeMotors = motors.filter((motor) => !archivedMotorIds.has(motor.id));
+  const fleetPageCount = Math.max(1, Math.ceil(activeMotors.length / FLEET_PAGE_SIZE));
   const currentFleetPage = Math.min(fleetPage, fleetPageCount);
-  const paginatedMotors = motors.slice(
+  const paginatedMotors = activeMotors.slice(
     (currentFleetPage - 1) * FLEET_PAGE_SIZE,
     currentFleetPage * FLEET_PAGE_SIZE
   );
@@ -323,20 +344,115 @@ export default function App() {
 
   const handleProvisionEmployee = async (e) => {
     e.preventDefault();
+    setUserFormError('');
+    setUserCreatedMessage('');
+    setIsSavingUser(true);
+    const isEditing = editingUserId !== null;
     try {
-      await provisionUserWithId(newEmpId, {
-        fullname: newFullname,
-        role: newRole,
-        pin: newPin
-      });
-      setUserCreatedMessage(`SAVED: ${newFullname} (ID: ${newEmpId})`);
+      if (isEditing) {
+        await updateRegisteredUser(editingUserId, {
+          fullname: newFullname,
+          role: newRole,
+          pin: newPin,
+        });
+      } else {
+        await provisionUserWithId(newEmpId, {
+          fullname: newFullname,
+          role: newRole,
+          pin: newPin,
+        });
+      }
+
+      setUserCreatedMessage(`${isEditing ? 'UPDATED' : 'SAVED'}: ${newFullname} (ID: ${newEmpId})`);
+      setEditingUserId(null);
       setNewEmpId('');
       setNewFullname('');
       setNewPin('1234');
-      const updated = await fetchRegisteredUsers();
-      setRegisteredUsers(updated);
-    } catch (err) {
-      console.error(err);
+      setNewRole('Employee');
+      if (isEditing) {
+        setRegisteredUsers((users) => users.map((user) => (
+          user.id === editingUserId
+            ? { ...user, employeeId: newEmpId, fullname: newFullname, role: newRole }
+            : user
+        )));
+      } else {
+        const updated = await fetchRegisteredUsers();
+        setRegisteredUsers(updated);
+      }
+    } catch (error) {
+      setUserFormError(error instanceof Error ? error.message : 'Unable to save this account.');
+    } finally {
+      setIsSavingUser(false);
+    }
+  };
+
+  const handleEditEmployee = (user) => {
+    setEditingUserId(user.id || user.employeeId);
+    setNewEmpId(user.employeeId || user.id || '');
+    setNewFullname(user.fullname || '');
+    setNewPin('');
+    setNewRole(user.role === 'Admin' ? 'Admin' : 'Employee');
+    setUserFormError('');
+    setUserCreatedMessage('');
+  };
+
+  const handleCancelEmployeeEdit = () => {
+    setEditingUserId(null);
+    setNewEmpId('');
+    setNewFullname('');
+    setNewPin('1234');
+    setNewRole('Employee');
+    setUserFormError('');
+  };
+
+  const handleArchiveEmployee = async (user) => {
+    const employeeId = user.id || user.employeeId;
+    if (!employeeId) {
+      setArchiveError('This account has no employee ID and cannot be archived.');
+      return;
+    }
+    if (employeeId === currentUser.uid || employeeId === currentUser.employeeId) {
+      setArchiveError('You cannot archive the account currently in use.');
+      return;
+    }
+    if (!window.confirm(`Archive ${user.fullname || employeeId}? This will disable the account.`)) return;
+
+    setArchiveError('');
+    setArchiveMessage('');
+    setArchivingItemId(`employee:${employeeId}`);
+    try {
+      const archived = await archiveRegisteredUser(employeeId, currentUser);
+      setArchivedItems((items) => [archived, ...items]);
+      setRegisteredUsers((users) => users.filter((item) => item.id !== employeeId));
+      setArchiveMessage(`Archived employee ${user.fullname || employeeId}.`);
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : 'Unable to archive this employee.');
+    } finally {
+      setArchivingItemId(null);
+    }
+  };
+
+  const handleArchiveMotor = async (motor) => {
+    if (motor.id === 'motor-mock') return;
+    if (!window.confirm(`Archive ${motor.motor_name || 'this motor'}? It will be removed from the active fleet.`)) return;
+
+    setArchiveError('');
+    setArchiveMessage('');
+    setArchivingItemId(`motor:${motor.id}`);
+    try {
+      const archived = await archiveMotorAsset(motor, currentUser);
+      setArchivedItems((items) => [archived, ...items]);
+      setMotors((items) => items.filter((item) => item.id !== motor.id));
+      if (selectedMotor?.id === motor.id) {
+        setSelectedMotor(null);
+        setActiveTab('fleet');
+      }
+      setFleetPage(1);
+      setArchiveMessage(`Archived motor ${motor.motor_name || motor.id}.`);
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : 'Unable to archive this motor.');
+    } finally {
+      setArchivingItemId(null);
     }
   };
 
@@ -426,6 +542,16 @@ export default function App() {
 
       {/* Main Exhibition Workspace */}
       <main className="flex-1 p-5 sm:p-10 lg:p-12 overflow-y-auto pb-28 md:pb-12 max-h-screen">
+        {archiveError && (
+          <div role="alert" className="max-w-6xl mx-auto mb-5 border border-rose-300 bg-rose-100 p-3 text-xs font-bold text-rose-900">
+            {archiveError}
+          </div>
+        )}
+        {archiveMessage && (
+          <div role="status" className="max-w-6xl mx-auto mb-5 border border-emerald-300 bg-emerald-100 p-3 text-xs font-bold text-emerald-900">
+            {archiveMessage}
+          </div>
+        )}
         <AnimatePresence mode="wait">
           
           {/* TAB 1: FLEET OVERVIEW */}
@@ -471,7 +597,24 @@ export default function App() {
                               <CheckCircle2 className="w-3.5 h-3.5 stroke-[2.5]" /> OPERATIONAL
                             </span>
                           )}
-                          <span className="text-[11px] font-bold text-[#57534e]">{m.rated_voltage} VAC</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-bold text-[#57534e]">{m.rated_voltage} VAC</span>
+                            {isAdmin && !isMock && (
+                              <button
+                                type="button"
+                                disabled={archivingItemId === `motor:${m.id}`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleArchiveMotor(m);
+                                }}
+                                className="inline-flex items-center gap-1 border border-[#cbd5e1] bg-[#f3eee6] px-2 py-1 text-[9px] font-bold uppercase text-[#57534e] hover:bg-[#ede5d8] disabled:opacity-50"
+                                aria-label={`Archive ${m.motor_name || 'motor'}`}
+                              >
+                                <Archive className="h-3 w-3" />
+                                {archivingItemId === `motor:${m.id}` ? 'ARCHIVING' : 'ARCHIVE'}
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         <h3 className="text-lg font-black text-[#1c1917] uppercase tracking-wide group-hover:text-purple-700 transition">
@@ -491,7 +634,7 @@ export default function App() {
               <PaginationControls
                 currentPage={currentFleetPage}
                 pageSize={FLEET_PAGE_SIZE}
-                totalItems={motors.length}
+                totalItems={activeMotors.length}
                 onPageChange={setFleetPage}
               />
             </motion.div>
@@ -854,13 +997,24 @@ export default function App() {
 
               <div className="border-2 border-[#e2d8cd] p-6 bg-[#f8f5ee] space-y-6">
                 <div>
-                  <h3 className="text-sm font-black uppercase tracking-wider">REGISTER OPERATOR BY EMPLOYEE ID</h3>
-                  <p className="text-xs text-[#57534e] mt-1">Authorized personnel use their official company ID number to authenticate on plant terminals.</p>
+                  <h3 className="text-sm font-black uppercase tracking-wider">
+                    {editingUserId ? 'EDIT EMPLOYEE ACCOUNT' : 'REGISTER OPERATOR BY EMPLOYEE ID'}
+                  </h3>
+                  <p className="text-xs text-[#57534e] mt-1">
+                    {editingUserId
+                      ? "Update this account's name, role, or PIN."
+                      : 'Authorized personnel use their official company ID number to authenticate on plant terminals.'}
+                  </p>
                 </div>
 
                 {userCreatedMessage && (
                   <div className="p-3 bg-emerald-100 border border-emerald-300 text-emerald-900 text-xs font-bold">
                     {userCreatedMessage}
+                  </div>
+                )}
+                {userFormError && (
+                  <div role="alert" className="p-3 bg-rose-100 border border-rose-300 text-rose-900 text-xs font-bold">
+                    {userFormError}
                   </div>
                 )}
 
@@ -869,10 +1023,13 @@ export default function App() {
                     <div>
                       <label className="text-xs font-bold text-[#44403c] block mb-1">EMPLOYEE ID #</label>
                       <input 
-                        type="text" required value={newEmpId} onChange={e => setNewEmpId(e.target.value)} 
+                        type="text" required readOnly={editingUserId !== null} value={newEmpId} onChange={e => setNewEmpId(e.target.value)}
                         placeholder="EMP-2026-081"
-                        className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
+                        className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none read-only:text-[#78716c] read-only:cursor-not-allowed"
                       />
+                      {editingUserId && (
+                        <p className="mt-1 text-[10px] text-[#78716c]">Employee ID is the account key and cannot be changed here.</p>
+                      )}
                     </div>
                     <div>
                       <label className="text-xs font-bold text-[#44403c] block mb-1">FULL NAME</label>
@@ -883,9 +1040,16 @@ export default function App() {
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-bold text-[#44403c] block mb-1">DEFAULT PIN</label>
-                      <input 
-                        type="password" required value={newPin} onChange={e => setNewPin(e.target.value)} 
+                      <label className="text-xs font-bold text-[#44403c] block mb-1">
+                        {editingUserId ? 'NEW PIN / PASSWORD' : 'DEFAULT PIN'}
+                      </label>
+                      <input
+                        type="password"
+                        required={!editingUserId}
+                        autoComplete="new-password"
+                        value={newPin}
+                        onChange={e => setNewPin(e.target.value)}
+                        placeholder={editingUserId ? 'Leave blank to keep current PIN' : ''}
                         className="w-full border-b border-[#cbd5e1] py-1.5 text-xs bg-transparent font-bold focus:outline-none"
                       />
                     </div>
@@ -897,9 +1061,16 @@ export default function App() {
                       </select>
                     </div>
                   </div>
-                  <button type="submit" className="py-2.5 px-6 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer">
-                    PROVISION ID
-                  </button>
+                  <div className="flex flex-wrap gap-3">
+                    <button type="submit" disabled={isSavingUser} className="py-2.5 px-6 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer disabled:opacity-60">
+                      {isSavingUser ? 'SAVING...' : editingUserId ? 'SAVE CHANGES' : 'PROVISION ID'}
+                    </button>
+                    {editingUserId && (
+                      <button type="button" onClick={handleCancelEmployeeEdit} disabled={isSavingUser} className="py-2.5 px-6 border-2 border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold tracking-widest uppercase hover:bg-[#ede5d8] disabled:opacity-60">
+                        CANCEL
+                      </button>
+                    )}
+                  </div>
                 </form>
 
                 <div className="pt-6 border-t-2 border-[#e2d8cd]">
@@ -909,20 +1080,99 @@ export default function App() {
                       <p className="text-xs text-[#78716c]">No operators provisioned in database.</p>
                     ) : (
                       registeredUsers.map((u) => (
-                        <div key={u.id} className="py-3 flex items-center justify-between text-xs">
+                        <div key={u.id} className="py-3 flex items-center justify-between gap-4 text-xs">
                           <div>
                             <p className="font-black text-[#1c1917]">{u.fullname}</p>
                             <span className="text-[11px] font-bold text-purple-900 bg-purple-100 px-2 py-0.5 border border-purple-200">
                               ID: {u.employeeId || u.id}
                             </span>
                           </div>
-                          <span className="uppercase font-black text-xs text-[#57534e]">{u.role}</span>
+                          <div className="flex items-center gap-4">
+                            <span className="uppercase font-black text-xs text-[#57534e]">{u.role}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleEditEmployee(u)}
+                              className="border border-[#cbd5e1] bg-[#f3eee6] px-3 py-1.5 font-bold uppercase text-[10px] hover:bg-[#ede5d8]"
+                              aria-label={`Edit ${u.fullname || u.id}`}
+                            >
+                              EDIT
+                            </button>
+                            <button
+                              type="button"
+                              disabled={archivingItemId === `employee:${u.id}`}
+                              onClick={() => handleArchiveEmployee(u)}
+                              className="inline-flex items-center gap-1 border border-rose-200 bg-rose-50 px-3 py-1.5 font-bold uppercase text-[10px] text-rose-800 hover:bg-rose-100 disabled:opacity-50"
+                              aria-label={`Archive ${u.fullname || u.id}`}
+                            >
+                              <Archive className="h-3 w-3" />
+                              {archivingItemId === `employee:${u.id}` ? 'ARCHIVING' : 'ARCHIVE'}
+                            </button>
+                          </div>
                         </div>
                       ))
                     )}
                   </div>
                 </div>
               </div>
+
+              <section className="border-2 border-[#e2d8cd] bg-[#f8f5ee] p-6">
+                <div className="mb-5 flex flex-col gap-3 border-b border-[#e2d8cd] pb-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold tracking-[0.2em] text-[#57534e] uppercase">RECORD HISTORY</span>
+                    <h3 className="mt-1 text-lg font-black uppercase">Archived Employees & Motors</h3>
+                    <p className="mt-1 text-xs text-[#57534e]">Archived records are removed from active accounts or fleet listings.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => exportArchiveReportPDF(archivedItems)}
+                    disabled={archivedItems.length === 0}
+                    className="border-2 border-[#1c1917] bg-[#1c1917] px-4 py-2 text-xs font-bold tracking-widest text-[#fbf9f5] hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    EXPORT ARCHIVE PDF
+                  </button>
+                </div>
+                {archivedItems.length === 0 ? (
+                  <p className="text-xs text-[#78716c]">No employees or motors have been archived.</p>
+                ) : (
+                  <div className="divide-y divide-[#e2d8cd]">
+                    {archivedItems.map((item) => {
+                      const isEmployee = item.type === 'employee';
+                      const name = isEmployee
+                        ? item.fullname || 'Unnamed employee'
+                        : item.motorName || item.motor_name || 'Unnamed motor';
+                      return (
+                        <div key={item.id} className="flex flex-col gap-2 py-4 text-xs sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="border border-purple-200 bg-purple-100 px-2 py-0.5 text-[10px] font-black uppercase text-purple-900">
+                                {isEmployee ? 'EMPLOYEE' : 'MOTOR'}
+                              </span>
+                              <p className="font-black text-[#1c1917]">{name}</p>
+                            </div>
+                            <p className="mt-1 text-[11px] font-bold text-[#57534e]">
+                              ID: {item.employeeId || item.originalId || '—'}
+                              {isEmployee && item.role ? ` · ${item.role}` : ''}
+                              {!isEmployee && item.ratedVoltage ? ` · ${item.ratedVoltage} VAC` : ''}
+                              {!isEmployee && item.location ? ` · ${item.location}` : ''}
+                            </p>
+                          </div>
+                          <div className="text-[11px] text-[#57534e] sm:text-right">
+                            <p>
+                              Archived {item.archivedAt && !Number.isNaN(new Date(item.archivedAt).getTime())
+                                ? new Date(item.archivedAt).toLocaleString()
+                                : 'date unavailable'}
+                            </p>
+                            <p className="mt-1">
+                              By {item.archivedBy || 'Administrator'}
+                              {item.archivedById ? ` · ID ${item.archivedById}` : ''}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
             </motion.div>
           )}
 

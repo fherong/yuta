@@ -11,7 +11,7 @@ export const AuthProvider = ({ children }) => {
   const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const login = async (email, password) => {
+  const login = async (email, password, accountProfile) => {
     // Demo Fast-Login Bypass for quick testing
     if (email === "admin@yuta.com" && password === "password123") {
       const demoAdmin = {
@@ -35,6 +35,11 @@ export const AuthProvider = ({ children }) => {
       };
       setCurrentUser(demoEmployee);
       return demoEmployee;
+    }
+
+    if (accountProfile) {
+      setCurrentUser(accountProfile);
+      return accountProfile;
     }
 
     const res = await signInWithEmailAndPassword(auth, email, password);
