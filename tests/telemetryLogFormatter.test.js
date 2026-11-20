@@ -30,9 +30,23 @@ test("converts log readings from MOhm to GOhm", () => {
 
   const converted = convertTelemetryLogUnit(log, "GΩ");
 
-  assert.equal(converted.ab_corrected, 0.11);
-  assert.equal(converted.bc_corrected, 0.005);
+  assert.equal(converted.ab_corrected, "0.110");
+  assert.equal(converted.bc_corrected, "0.005");
   assert.equal(converted.reading_unit, "GΩ");
+});
+
+test("formats GOhm readings to three decimal places", () => {
+  const log = {
+    reading_unit: "GΩ",
+    ab_corrected: 1.25,
+    bc_corrected: 0.0049,
+  };
+
+  const converted = convertTelemetryLogUnit(log, "GΩ");
+
+  assert.equal(converted.ab_corrected, "1.250");
+  assert.equal(converted.bc_corrected, "0.005");
+  assert.equal(log.ab_corrected, 1.25);
 });
 
 test("keeps Arduino readings unchanged while deriving display status", () => {

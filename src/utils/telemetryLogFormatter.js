@@ -16,9 +16,11 @@ export function convertTelemetryLogUnit(log, targetUnit) {
   }
 
   const sourceUnit = log.reading_unit === "GΩ" ? "GΩ" : "MΩ";
-  if (sourceUnit === targetUnit) return log;
+  if (sourceUnit === targetUnit && targetUnit === "MΩ") return log;
 
-  const multiplier = targetUnit === "GΩ" ? 0.001 : 1000;
+  const multiplier = targetUnit === "GΩ"
+    ? (sourceUnit === "GΩ" ? 1 : 0.001)
+    : (sourceUnit === "GΩ" ? 1000 : 1);
   const convertedLog = { ...log, reading_unit: targetUnit };
   for (const field of RESISTANCE_DISPLAY_FIELDS) {
     const value = log[field];
@@ -26,7 +28,10 @@ export function convertTelemetryLogUnit(log, targetUnit) {
 
     const numericValue = Number(value);
     if (Number.isFinite(numericValue)) {
-      convertedLog[field] = numericValue * multiplier;
+      const convertedValue = numericValue * multiplier;
+      convertedLog[field] = targetUnit === "GΩ"
+        ? convertedValue.toFixed(3)
+        : convertedValue;
     }
   }
 
