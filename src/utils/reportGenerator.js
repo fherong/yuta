@@ -1,3 +1,5 @@
+import { getEmployeeId } from "./employeeId.js";
+
 /**
  * Converts telemetry logs to CSV and triggers a browser download.
  * @param {Array} telemetryLogs - Array of historical/live telemetry log objects.
@@ -10,35 +12,61 @@ export function exportTelemetryToCSV(telemetryLogs, activeMotor) {
   }
 
   const headers = [
-    "Timestamp",
+    "Test Date & Time",
+    "Employee ID",
     "Motor Name",
     "Location",
-    "Operating Voltage (V)",
-    "Direct IR (M-Ohm)",
-    "Temperature (C)",
-    "Normalized IR 40C (M-Ohm)",
-    "Baseline Limit (M-Ohm)",
+    "Test Voltage (V)",
+    "Duration (min)",
+    "A-B IR (MΩ)",
+    "B-C IR (MΩ)",
+    "C-A IR (MΩ)",
+    "A-G IR (MΩ)",
+    "B-G IR (MΩ)",
+    "C-G IR (MΩ)",
     "Status",
-    "Operator"
   ];
 
+  const escapeCsvCell = (value) => {
+    const text = value == null ? "" : String(value);
+    const safeText = typeof value === "string" && /^[\s]*[=+\-@]/.test(text)
+      ? `'${text}`
+      : text;
+    return `"${safeText.replace(/"/g, '""')}"`;
+  };
+  const getTestDate = (log) => {
+    if (log.testDate) return log.testDate;
+    if (!log.timestamp) return log.formattedDate || "";
+    const timestamp = new Date(log.timestamp);
+    return Number.isNaN(timestamp.getTime())
+      ? String(log.timestamp)
+      : timestamp.toLocaleString([], {
+          year: "numeric",
+          month: "short",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+  };
   const rows = telemetryLogs.map((log) => [
-    `"${log.formattedDate || ""}"`,
-    `"${activeMotor?.motor_name || "Motor"}"`,
-    `"${activeMotor?.location || "Plant"}"`,
-    log.rated_voltage || activeMotor?.rated_voltage || 480,
-    log.raw_ir,
-    log.temperature,
-    log.corrected_ir,
-    log.ir_min,
-    `"${log.motor_status}"`,
-    `"${log.user_name || "Python Gateway"}"`
+    getTestDate(log),
+    getEmployeeId(log),
+    activeMotor?.motor_name || "Motor",
+    activeMotor?.location || "Plant",
+    log.test_voltage ?? log.testVoltage ?? "",
+    log.minutes ?? "",
+    log.ab_corrected ?? log.raw_ab ?? log.rawIR ?? "",
+    log.bc_corrected ?? log.raw_bc ?? log.rawIR ?? "",
+    log.ca_corrected ?? log.raw_ca ?? log.rawIR ?? "",
+    log.ag_corrected ?? log.raw_ag ?? log.rawIR ?? "",
+    log.bg_corrected ?? log.raw_bg ?? log.rawIR ?? "",
+    log.cg_corrected ?? log.raw_cg ?? log.rawIR ?? "",
+    log.motor_status ?? log.status ?? "",
   ]);
 
-  const csvContent = [
-    headers.join(","),
-    ...rows.map((row) => row.join(","))
-  ].join("\n");
+  const csvContent = "\uFEFF" + [headers, ...rows]
+    .map((row) => row.map(escapeCsvCell).join(","))
+    .join("\r\n");
 
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);

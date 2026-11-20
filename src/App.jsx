@@ -12,6 +12,7 @@ import {
   fetchTelemetryHistory
 } from './services/telemetryService';
 import { exportTelemetryToCSV, exportMaintenanceReportPDF } from './utils/reportGenerator';
+import { getEmployeeId } from './utils/employeeId';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   LogOut, 
@@ -30,6 +31,44 @@ import {
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 
+const FLEET_PAGE_SIZE = 9;
+const LOGS_PAGE_SIZE = 10;
+
+function PaginationControls({ currentPage, pageSize, totalItems, onPageChange }) {
+  if (totalItems <= pageSize) return null;
+
+  const totalPages = Math.ceil(totalItems / pageSize);
+  const firstItem = (currentPage - 1) * pageSize + 1;
+  const lastItem = Math.min(currentPage * pageSize, totalItems);
+
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between text-xs font-bold">
+      <span className="text-[#57534e]" aria-live="polite">
+        Showing {firstItem}-{lastItem} of {totalItems}
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onPageChange(currentPage - 1)}
+          disabled={currentPage === 1}
+          className="border-2 border-[#cbd5e1] bg-[#f3eee6] px-3 py-2 uppercase hover:bg-[#ede5d8] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Previous
+        </button>
+        <span className="px-2 text-[#57534e]">Page {currentPage} of {totalPages}</span>
+        <button
+          type="button"
+          onClick={() => onPageChange(currentPage + 1)}
+          disabled={currentPage === totalPages}
+          className="border-2 border-[#cbd5e1] bg-[#f3eee6] px-3 py-2 uppercase hover:bg-[#ede5d8] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const { currentUser, logout, isAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState('fleet');
@@ -43,6 +82,8 @@ export default function App() {
 
   const [motors, setMotors] = useState(defaultMotors);
   const [selectedMotor, setSelectedMotor] = useState(null);
+  const [fleetPage, setFleetPage] = useState(1);
+  const [logsPage, setLogsPage] = useState(1);
 
   // Real-time & History States
   const [liveTelemetry, setLiveTelemetry] = useState(null);
@@ -156,6 +197,7 @@ export default function App() {
             ir_min: Number(item.thresholdIR || 1.38),
             motor_status: item.status || 'NORMAL',
             operator_name: item.operatorName || 'Python Gateway OCR',
+            employee_id: getEmployeeId(item),
             testDate,
             formattedDate: item.timestamp 
               ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -180,6 +222,7 @@ export default function App() {
 
   const handleSelectMotor = (motor) => {
     setSelectedMotor(motor);
+    setLogsPage(1);
     setActiveTab('overview');
   };
 
@@ -191,6 +234,18 @@ export default function App() {
   const filteredLogs = selectedMotor?.id === 'motor-mock'
     ? telemetryLogs
     : telemetryLogs.filter(l => l.motor_id === selectedMotor?.id);
+  const fleetPageCount = Math.max(1, Math.ceil(motors.length / FLEET_PAGE_SIZE));
+  const currentFleetPage = Math.min(fleetPage, fleetPageCount);
+  const paginatedMotors = motors.slice(
+    (currentFleetPage - 1) * FLEET_PAGE_SIZE,
+    currentFleetPage * FLEET_PAGE_SIZE
+  );
+  const logsPageCount = Math.max(1, Math.ceil(filteredLogs.length / LOGS_PAGE_SIZE));
+  const currentLogsPage = Math.min(logsPage, logsPageCount);
+  const paginatedLogs = filteredLogs.slice(
+    (currentLogsPage - 1) * LOGS_PAGE_SIZE,
+    currentLogsPage * LOGS_PAGE_SIZE
+  );
 
   // Filter dataset by test voltage safely with type casting
   const chartDataset = filteredLogs.filter(log => {
@@ -393,7 +448,7 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                {motors.map((m) => {
+                {paginatedMotors.map((m) => {
                   const isMock = m.id === 'motor-mock';
                   return (
                     <div 
@@ -433,6 +488,12 @@ export default function App() {
                   );
                 })}
               </div>
+              <PaginationControls
+                currentPage={currentFleetPage}
+                pageSize={FLEET_PAGE_SIZE}
+                totalItems={motors.length}
+                onPageChange={setFleetPage}
+              />
             </motion.div>
           )}
 
@@ -705,6 +766,7 @@ export default function App() {
                   <thead className="bg-[#f3eee6] border-b-2 border-[#e2d8cd] uppercase text-[#44403c]">
                     <tr>
                       <th className="p-3">Test Date</th>
+                      <th className="p-3">Employee ID</th>
                       <th className="p-3">Volts</th>
                       <th className="p-3">Duration</th>
                       <th className="p-3">A-B</th>
@@ -718,11 +780,22 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-[#e2d8cd]">
                     {filteredLogs.length === 0 ? (
-                      <tr><td colSpan="10" className="p-6 text-center text-[#78716c]">No historical logs for this station yet.</td></tr>
+                      <tr><td colSpan="11" className="p-6 text-center text-[#78716c]">No historical logs for this station yet.</td></tr>
                     ) : (
-                      filteredLogs.map((log) => (
+                      paginatedLogs.map((log) => (
                         <tr key={log.id}>
-                          <td className="p-3 text-[#57534e]">{log.testDate}</td>
+                          <td className="p-3 text-[#57534e]">
+                            {log.testDate || (log.timestamp
+                              ? new Date(log.timestamp).toLocaleString([], {
+                                  year: 'numeric',
+                                  month: 'short',
+                                  day: '2-digit',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })
+                              : log.formattedDate || '—')}
+                          </td>
+                          <td className="p-3">{getEmployeeId(log) || '—'}</td>
                           <td className="p-3 font-bold text-purple-900">{log.test_voltage}V</td>
                           <td className="p-3">{log.minutes} min</td>
                           <td className="p-3">{log.ab_corrected} MΩ</td>
@@ -738,6 +811,12 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
+              <PaginationControls
+                currentPage={currentLogsPage}
+                pageSize={LOGS_PAGE_SIZE}
+                totalItems={filteredLogs.length}
+                onPageChange={setLogsPage}
+              />
             </motion.div>
           )}
 

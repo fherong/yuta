@@ -17,6 +17,7 @@ export const AuthProvider = ({ children }) => {
       const demoAdmin = {
         uid: "demo-admin-01",
         email: "admin@yuta.com",
+        employeeId: "EMP-ADM-001",
         fullname: "Plant Admin",
         role: "Admin"
       };
@@ -28,6 +29,7 @@ export const AuthProvider = ({ children }) => {
       const demoEmployee = {
         uid: "demo-employee-01",
         email: "employee@yuta.com",
+        employeeId: "EMP-2026-001",
         fullname: "Floor Technician",
         role: "Employee"
       };
