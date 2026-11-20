@@ -14,7 +14,6 @@ import {
   subscribeToLiveTelemetry,
   fetchTelemetryHistory
 } from './services/telemetryService';
-import { exportTelemetryToCSV, exportMaintenanceReportPDF, exportArchiveReportPDF } from './utils/reportGenerator';
 import { getEmployeeId } from './utils/employeeId';
 import { convertTelemetryLogUnit, formatTelemetryLog } from './utils/telemetryLogFormatter.js';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -34,10 +33,10 @@ import {
   Zap,
   Archive
 } from 'lucide-react';
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 
 const FLEET_PAGE_SIZE = 9;
 const LOGS_PAGE_SIZE = 10;
+const TelemetryChart = React.lazy(() => import('./components/TelemetryChart.jsx'));
 
 function PaginationControls({ currentPage, pageSize, totalItems, onPageChange }) {
   if (totalItems <= pageSize) return null;
@@ -368,6 +367,26 @@ export default function App() {
     }
   };
 
+  const handleExportTelemetryToCSV = async (logs, motor) => {
+    try {
+      const { exportTelemetryToCSV } = await import('./utils/reportGenerator.js');
+      exportTelemetryToCSV(logs, motor);
+    } catch (error) {
+      console.error('Unable to export telemetry CSV:', error);
+      window.alert('Unable to load the CSV export. Please try again.');
+    }
+  };
+
+  const handleExportArchiveReport = async () => {
+    try {
+      const { exportArchiveReportPDF } = await import('./utils/archiveReportGenerator.js');
+      exportArchiveReportPDF(archivedItems);
+    } catch (error) {
+      console.error('Unable to export archive report:', error);
+      window.alert('Unable to load the archive PDF export. Please try again.');
+    }
+  };
+
   return (
     <div className="flex flex-col md:flex-row min-h-screen bg-[#fbf9f5] text-[#1c1917] selection:bg-purple-700 selection:text-white font-mono">
       
@@ -568,10 +587,10 @@ export default function App() {
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
-                  <button onClick={() => exportTelemetryToCSV(filteredLogs, selectedMotor)} className="px-4 py-2 border-2 border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold tracking-widest uppercase hover:bg-[#ede5d8] transition cursor-pointer">
+                  <button onClick={() => handleExportTelemetryToCSV(filteredLogs, selectedMotor)} className="px-4 py-2 border-2 border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold tracking-widest uppercase hover:bg-[#ede5d8] transition cursor-pointer">
                     EXPORT CSV
                   </button>
-                  <button onClick={() => exportMaintenanceReportPDF(filteredLogs, selectedMotor, [])} className="px-4 py-2 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer">
+                  <button onClick={() => window.print()} className="px-4 py-2 bg-[#1c1917] text-[#fbf9f5] text-xs font-bold tracking-widest uppercase hover:bg-black transition cursor-pointer">
                     DOWNLOAD PDF
                   </button>
                 </div>
@@ -681,35 +700,9 @@ export default function App() {
                 </div>
 
                 <div className="h-80 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={chartDataset}>
-                      <CartesianGrid strokeDasharray="2 2" stroke="#cbd5e1" vertical={false} />
-                      <XAxis dataKey="formattedDate" stroke="#44403c" fontSize={11} />
-                      <YAxis stroke="#44403c" fontSize={11} domain={[0, 'auto']} />
-                      <Tooltip />
-                      <Legend />
-                      
-                      {/* Phase-to-Phase Lines */}
-                      {(lineFilterGroup === 'ALL' || lineFilterGroup === 'PHASE_TO_PHASE') && (
-                        <>
-                          <Line type="monotone" dataKey="ab_corrected" name="A-B MΩ" stroke="#7c3aed" strokeWidth={2.5} dot={{ r: 3 }} />
-                          <Line type="monotone" dataKey="bc_corrected" name="B-C MΩ" stroke="#2563eb" strokeWidth={2.5} dot={{ r: 3 }} />
-                          <Line type="monotone" dataKey="ca_corrected" name="C-A MΩ" stroke="#059669" strokeWidth={2.5} dot={{ r: 3 }} />
-                        </>
-                      )}
-
-                      {/* Phase-to-Ground Lines */}
-                      {(lineFilterGroup === 'ALL' || lineFilterGroup === 'PHASE_TO_GROUND') && (
-                        <>
-                          <Line type="monotone" dataKey="ag_corrected" name="A-G MΩ" stroke="#d97706" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} />
-                          <Line type="monotone" dataKey="bg_corrected" name="B-G MΩ" stroke="#dc2626" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} />
-                          <Line type="monotone" dataKey="cg_corrected" name="C-G MΩ" stroke="#475569" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} />
-                        </>
-                      )}
-                      
-                      <Line type="monotone" dataKey="ir_min" name="IEEE Limit" stroke="#dc2626" strokeWidth={2} strokeDasharray="2 2" dot={false} />
-                    </LineChart>
-                  </ResponsiveContainer>
+                  <React.Suspense fallback={<div className="flex h-full items-center justify-center text-xs font-bold">LOADING CHART...</div>}>
+                    <TelemetryChart data={chartDataset} lineFilterGroup={lineFilterGroup} />
+                  </React.Suspense>
                 </div>
               </div>
 
@@ -745,7 +738,7 @@ export default function App() {
                       ))}
                     </div>
                   </div>
-                  <button onClick={() => exportTelemetryToCSV(logsInDisplayUnit, selectedMotor)} className="px-3 py-1.5 border border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold uppercase hover:bg-[#ede5d8]">
+                  <button onClick={() => handleExportTelemetryToCSV(logsInDisplayUnit, selectedMotor)} className="px-3 py-1.5 border border-[#cbd5e1] bg-[#f3eee6] text-xs font-bold uppercase hover:bg-[#ede5d8]">
                     EXPORT CSV
                   </button>
                 </div>
@@ -976,7 +969,7 @@ export default function App() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => exportArchiveReportPDF(archivedItems)}
+                    onClick={handleExportArchiveReport}
                     disabled={archivedItems.length === 0}
                     className="border-2 border-[#1c1917] bg-[#1c1917] px-4 py-2 text-xs font-bold tracking-widest text-[#fbf9f5] hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
                   >
