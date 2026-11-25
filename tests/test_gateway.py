@@ -2,9 +2,12 @@ import json
 import tempfile
 import unittest
 from concurrent.futures import Future
+from urllib.error import HTTPError
 from types import SimpleNamespace
+from urllib.request import Request, urlopen
 from unittest.mock import Mock, patch
 
+from camera_preview import CameraPreviewServer, configure_site_wifi
 from gateway import (
     OCR_FIELDS,
     _save_record,
@@ -49,6 +52,83 @@ class OCRReadingTests(unittest.TestCase):
 
         cv2.VideoCapture.assert_called_once_with("/dev/video1")
         camera.release.assert_called_once_with()
+
+    def test_local_camera_preview_serves_page_and_mjpeg_frames(self):
+        server = CameraPreviewServer("127.0.0.1", 0)
+        server.frame_buffer.publish(b"test-jpeg-frame")
+        server.start()
+
+        try:
+            base_url = f"http://127.0.0.1:{server.address[1]}"
+            with urlopen(f"{base_url}/", timeout=2) as response:
+                page = response.read().decode("utf-8")
+            self.assertIn("Y.U.T.A. CAMERA PREVIEW", page)
+            self.assertIn("ocr-box", page)
+            self.assertIn("unit-box", page)
+            self.assertIn("Set up site Wi-Fi", page)
+
+            with urlopen(f"{base_url}/stream.mjpg", timeout=2) as response:
+                self.assertIn("multipart/x-mixed-replace", response.headers["Content-Type"])
+                self.assertEqual(response.readline(), b"--frame\r\n")
+                response.readline()
+                response.readline()
+                self.assertEqual(response.readline(), b"\r\n")
+                frame_bytes = response.read(len(b"test-jpeg-frame"))
+            self.assertEqual(frame_bytes, b"test-jpeg-frame")
+        finally:
+            server.close()
+
+    def test_wifi_setup_endpoint_rejects_non_hotspot_clients(self):
+        server = CameraPreviewServer("127.0.0.1", 0)
+        server.start()
+
+        try:
+            request = Request(
+                f"http://127.0.0.1:{server.address[1]}/api/wifi",
+                data=json.dumps({
+                    "ssid": "Plant-WiFi",
+                    "password": "password123",
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(HTTPError) as error:
+                urlopen(request, timeout=2)
+            self.assertEqual(error.exception.code, 403)
+        finally:
+            server.close()
+
+    def test_wifi_configuration_is_restricted_to_setup_hotspot_clients(self):
+        with patch("camera_preview.subprocess.run") as run:
+            with self.assertRaisesRegex(PermissionError, "YUTA-Setup"):
+                configure_site_wifi("192.168.1.25", "Plant-WiFi", "password123")
+        run.assert_not_called()
+
+    def test_wifi_configuration_uses_the_privileged_fixed_helper(self):
+        with patch(
+            "camera_preview.subprocess.run",
+            return_value=SimpleNamespace(returncode=0),
+        ) as run:
+            message = configure_site_wifi(
+                "10.42.0.25",
+                "Plant-WiFi",
+                "password123",
+            )
+
+        self.assertIn("will now try to join", message)
+        self.assertEqual(
+            run.call_args.args[0],
+            ["sudo", "-n", "/usr/local/sbin/yuta-configure-wifi"],
+        )
+        self.assertEqual(
+            json.loads(run.call_args.kwargs["input"]),
+            {
+                "action": "save",
+                "ssid": "Plant-WiFi",
+                "password": "password123",
+            },
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
 
     def test_parses_a_single_ut501a_reading(self):
         self.assertEqual(parse_ut501a_reading(" 1,25 GΩ "), 1.25)

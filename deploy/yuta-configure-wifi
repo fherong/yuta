@@ -1,0 +1,107 @@
+#!/usr/bin/python3
+import json
+import os
+import subprocess
+import sys
+
+
+WIFI_INTERFACE_FILE = "/etc/yuta-network-interface"
+
+
+def run_nmcli(arguments):
+    return subprocess.run(
+        ["nmcli", *arguments],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+
+
+def main():
+    if len(sys.argv) != 1:
+        raise ValueError("This helper does not accept command-line arguments")
+    if os.geteuid() != 0:
+        raise PermissionError("This helper must run as root")
+
+    settings = json.load(sys.stdin)
+    if not isinstance(settings, dict):
+        raise ValueError("Invalid Wi-Fi settings")
+    action = settings.get("action")
+
+    active = run_nmcli(["-t", "-f", "NAME", "connection", "show", "--active"])
+    if "YUTA-Setup" not in active.stdout.splitlines():
+        raise PermissionError("Wi-Fi changes are only allowed from the YUTA-Setup hotspot")
+
+    if action == "activate":
+        run_nmcli(["connection", "up", "YUTA-Site"])
+        print("YUTA site Wi-Fi activated.")
+        return
+    if action != "save":
+        raise ValueError("Invalid Wi-Fi action")
+
+    ssid = settings.get("ssid")
+    password = settings.get("password")
+    if not isinstance(ssid, str) or not ssid.strip() or len(ssid.encode("utf-8")) > 32:
+        raise ValueError("Invalid Wi-Fi network name")
+    if any(ord(character) < 32 or ord(character) == 127 for character in ssid):
+        raise ValueError("Invalid Wi-Fi network name")
+    if not isinstance(password, str) or not 8 <= len(password.encode("utf-8")) <= 63:
+        raise ValueError("Invalid Wi-Fi password")
+
+    try:
+        with open(WIFI_INTERFACE_FILE, encoding="utf-8") as interface_file:
+            wifi_interface = interface_file.read().strip()
+    except FileNotFoundError:
+        wifi_interface = "wlan0"
+
+    profile = ["connection", "show", "YUTA-Site"]
+    exists = subprocess.run(
+        ["nmcli", *profile],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=15,
+    ).returncode == 0
+
+    if exists:
+        run_nmcli([
+            "connection", "modify", "YUTA-Site",
+            "802-11-wireless.ssid", ssid.strip(),
+            "802-11-wireless.mode", "infrastructure",
+            "connection.interface-name", wifi_interface,
+            "wifi-sec.key-mgmt", "wpa-psk",
+            "wifi-sec.psk", password,
+            "connection.autoconnect", "yes",
+            "connection.autoconnect-priority", "100",
+            "ipv4.method", "auto",
+            "ipv6.method", "auto",
+        ])
+    else:
+        run_nmcli([
+            "connection", "add",
+            "type", "wifi",
+            "ifname", wifi_interface,
+            "con-name", "YUTA-Site",
+            "ssid", ssid.strip(),
+        ])
+        run_nmcli([
+            "connection", "modify", "YUTA-Site",
+            "802-11-wireless.mode", "infrastructure",
+            "wifi-sec.key-mgmt", "wpa-psk",
+            "wifi-sec.psk", password,
+            "connection.autoconnect", "yes",
+            "connection.autoconnect-priority", "100",
+            "ipv4.method", "auto",
+            "ipv6.method", "auto",
+        ])
+
+    print("YUTA site Wi-Fi profile saved.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, PermissionError, subprocess.SubprocessError, ValueError):
+        print("Wi-Fi setup failed.", file=sys.stderr)
+        sys.exit(1)

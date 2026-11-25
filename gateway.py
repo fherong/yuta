@@ -8,11 +8,14 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
+from camera_preview import CameraPreviewServer
 import gatewayy
 
 
 SERIAL_PORT = gatewayy.SERIAL_PORT
 BAUD_RATE = gatewayy.BAUD_RATE
+CAMERA_WEB_HOST = os.getenv("CAMERA_WEB_HOST", "0.0.0.0")
+CAMERA_WEB_PORT = int(os.getenv("CAMERA_WEB_PORT", "8080"))
 OCR_TEST_SECONDS = 60
 OCR_SAMPLE_INTERVAL = 0.5
 OCR_STABLE_SAMPLES = 4
@@ -546,12 +549,22 @@ def main():
         raise RuntimeError("CAMERA_PREVIEW requires a desktop display session")
 
     camera = open_usb_camera(cv2)
-
-    def show_camera_frame(frame):
-        cv2.imshow("YUTA USB camera preview", frame)
-        cv2.waitKey(1)
-
+    preview_server = None
     try:
+        preview_server = CameraPreviewServer(CAMERA_WEB_HOST, CAMERA_WEB_PORT)
+        preview_server.start()
+
+        def show_camera_frame(frame):
+            preview_server.publish_frame(frame, cv2)
+            if preview_enabled:
+                cv2.imshow("YUTA USB camera preview", frame)
+                cv2.waitKey(1)
+
+        print(
+            "YUTA camera preview is available at "
+            f"http://<Pi-IP>:{preview_server.address[1]}/ "
+            "(phone/tablet must be on the same local network)"
+        )
         session = requests.Session()
         queue = gatewayy.TelemetryQueue(gatewayy.QUEUE_DB_PATH)
         run_ocr_gateway(
@@ -561,9 +574,11 @@ def main():
             queue,
             camera,
             lambda frame: read_ut501a_frame(frame, pytesseract),
-            preview_frame=show_camera_frame if preview_enabled else None,
+            preview_frame=show_camera_frame,
         )
     finally:
+        if preview_server is not None:
+            preview_server.close()
         if preview_enabled:
             cv2.destroyAllWindows()
         camera.release()
