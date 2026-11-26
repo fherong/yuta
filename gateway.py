@@ -49,6 +49,52 @@ def open_usb_camera(cv2_module, device=None):
     return camera
 
 
+class PiCameraCapture:
+    def __init__(self, camera):
+        self._camera = camera
+
+    def capture_array(self):
+        return self._camera.capture_array()
+
+    def read(self):
+        frame = self.capture_array()
+        return frame is not None, frame
+
+    def release(self):
+        self._camera.stop()
+        self._camera.close()
+
+
+def open_picamera2_camera():
+    try:
+        from picamera2 import Picamera2
+    except ImportError as error:
+        raise RuntimeError(
+            "Picamera2 is not available to this Python; install python3-picamera2 "
+            "and use a virtual environment with system site packages"
+        ) from error
+
+    camera = Picamera2()
+    camera.configure(
+        camera.create_video_configuration(
+            main={"format": "RGB888", "size": (1280, 720)},
+        )
+    )
+    camera.start()
+    return PiCameraCapture(camera)
+
+
+def open_camera(cv2_module, backend=None, device=None):
+    configured_backend = str(
+        backend if backend is not None else os.getenv("CAMERA_BACKEND", "picamera2")
+    ).strip().lower()
+    if configured_backend == "picamera2":
+        return open_picamera2_camera()
+    if configured_backend == "usb":
+        return open_usb_camera(cv2_module, device)
+    raise ValueError("CAMERA_BACKEND must be 'picamera2' or 'usb'")
+
+
 def parse_ut501a_reading(text):
     if not isinstance(text, str):
         raise ValueError("OCR output must be text")
@@ -548,7 +594,7 @@ def main():
     if preview_enabled and not (os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY")):
         raise RuntimeError("CAMERA_PREVIEW requires a desktop display session")
 
-    camera = open_usb_camera(cv2)
+    camera = open_camera(cv2)
     preview_server = None
     try:
         preview_server = CameraPreviewServer(CAMERA_WEB_HOST, CAMERA_WEB_PORT)
@@ -557,7 +603,7 @@ def main():
         def show_camera_frame(frame):
             preview_server.publish_frame(frame, cv2)
             if preview_enabled:
-                cv2.imshow("YUTA USB camera preview", frame)
+                cv2.imshow("YUTA camera preview", frame)
                 cv2.waitKey(1)
 
         print(

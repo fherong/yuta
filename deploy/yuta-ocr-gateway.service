@@ -6,11 +6,11 @@ After=network-online.target
 [Service]
 Type=simple
 User=YOUR_PI_USERNAME
-SupplementaryGroups=dialout
+SupplementaryGroups=dialout video
 WorkingDirectory=%h/yuta
 Environment=SERIAL_PORT=/dev/ttyACM0
 Environment=BAUD_RATE=9600
-Environment=CAMERA_DEVICE=0
+Environment=CAMERA_BACKEND=picamera2
 Environment=CAMERA_WEB_PORT=8080
 EnvironmentFile=-/etc/yuta-gateway.env
 ExecStart=%h/yuta/.venv/bin/python %h/yuta/gateway.py

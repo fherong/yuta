@@ -14,6 +14,7 @@ from gateway import (
     _handle_capture_event,
     build_ocr_test_record,
     capture_last_stable_reading,
+    open_camera,
     open_usb_camera,
     parse_ut501a_reading,
     read_ut501a_frame,
@@ -52,6 +53,36 @@ class OCRReadingTests(unittest.TestCase):
 
         cv2.VideoCapture.assert_called_once_with("/dev/video1")
         camera.release.assert_called_once_with()
+
+    def test_opens_picamera2_camera_and_adapts_frames_for_gateway(self):
+        picamera2 = Mock()
+        picamera2.capture_array.return_value = object()
+        picamera2_module = SimpleNamespace(Picamera2=Mock(return_value=picamera2))
+        cv2 = Mock()
+
+        with patch.dict("sys.modules", {"picamera2": picamera2_module}):
+            camera = open_camera(cv2, backend="picamera2")
+
+        picamera2.configure.assert_called_once_with(
+            picamera2.create_video_configuration.return_value
+        )
+        picamera2.start.assert_called_once_with()
+        success, frame = camera.read()
+        self.assertTrue(success)
+        self.assertIs(frame, picamera2.capture_array.return_value)
+        camera.release()
+        picamera2.stop.assert_called_once_with()
+        picamera2.close.assert_called_once_with()
+        cv2.VideoCapture.assert_not_called()
+
+    def test_usb_backend_remains_available(self):
+        cv2 = Mock()
+        camera = Mock()
+        camera.isOpened.return_value = True
+        cv2.VideoCapture.return_value = camera
+
+        self.assertIs(open_camera(cv2, backend="usb", device="/dev/video2"), camera)
+        cv2.VideoCapture.assert_called_once_with("/dev/video2")
 
     def test_local_camera_preview_serves_page_and_mjpeg_frames(self):
         server = CameraPreviewServer("127.0.0.1", 0)

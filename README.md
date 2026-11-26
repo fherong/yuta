@@ -6,18 +6,20 @@ Use `gateway.py` with the OCR Arduino sketch, or `gatewayy.py` with the manual-e
 
 ### UT501A camera OCR
 
-Connect a USB camera to the Pi and frame the UNI-T UT501A display. Install Tesseract and the Python environment tools:
+Connect the Raspberry Pi Camera Module and frame the UNI-T UT501A display. The gateway uses Picamera2 by default. Install Tesseract and the Pi camera Python package:
 
 ```bash
-sudo apt install tesseract-ocr python3-venv
+sudo apt install tesseract-ocr python3-venv python3-picamera2
 ```
 
-Create a virtual environment and install the project dependencies:
+Create a virtual environment that can access the system-installed Picamera2 package, then install the project dependencies:
 
 ```bash
-python3 -m venv .venv
+python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -r requirements.txt
 ```
+
+If `.venv` already exists without system site packages, recreate it with the option above before installing dependencies.
 
 If you installed the earlier headless OpenCV package, remove it before installing the GUI-enabled package:
 
@@ -29,10 +31,10 @@ If you installed the earlier headless OpenCV package, remove it before installin
 Upload [arduino/YUTA_Arduino_OCR.ino](arduino/YUTA_Arduino_OCR.ino) to the Arduino Mega 2560 and run the OCR gateway:
 
 ```bash
-SERIAL_PORT=/dev/ttyACM0 CAMERA_DEVICE=0 .venv/bin/python gateway.py
+SERIAL_PORT=/dev/ttyACM0 CAMERA_BACKEND=picamera2 .venv/bin/python gateway.py
 ```
 
-The default USB camera is index `0`; no model name is required. If it is not detected, check `/dev/video*` and set `CAMERA_DEVICE` to another index (such as `1`) or a device path (such as `/dev/video0`).
+For a USB camera instead, set `CAMERA_BACKEND=usb`; `CAMERA_DEVICE` accepts an index (such as `0` or `1`) or a device path (such as `/dev/video0`).
 
 The OCR gateway serves a phone-friendly live preview at `http://<PI-IP>:8080/`, including a green outline for the OCR area and a yellow outline for the M/G unit. Open it from a phone or tablet on the same local Wi-Fi network as the Pi. The video stream is served directly from the Pi and does not require internet; the cloud-hosted YUTA dashboard still requires internet. Find the Pi's local address with `hostname -I`. Set `CAMERA_WEB_PORT` to change the port. The optional OpenCV desktop preview can still be enabled with `CAMERA_PREVIEW=1` from a desktop session.
 
@@ -83,10 +85,10 @@ sudo cp deploy/yuta-ocr-gateway.service /etc/systemd/system/yuta-ocr-gateway.ser
 sudo nano /etc/systemd/system/yuta-ocr-gateway.service
 ```
 
-Replace `YOUR_PI_USERNAME` with the Pi login name. The example expects the repository at `/home/<username>/yuta` and the virtual environment at `/home/<username>/yuta/.venv`; update `WorkingDirectory` and `ExecStart` if yours differ. Set `SERIAL_PORT` and `CAMERA_DEVICE` to the actual devices. Add the Pi user to the `dialout` group if needed:
+Replace `YOUR_PI_USERNAME` with the Pi login name. The example expects the repository at `/home/<username>/yuta` and the virtual environment at `/home/<username>/yuta/.venv`; update `WorkingDirectory` and `ExecStart` if yours differ. Set `SERIAL_PORT` and `CAMERA_BACKEND` as needed. Add the Pi user to the `dialout` and `video` groups if needed:
 
 ```bash
-sudo usermod -aG dialout YOUR_PI_USERNAME
+sudo usermod -aG dialout,video YOUR_PI_USERNAME
 sudo systemctl daemon-reload
 sudo systemctl enable --now yuta-ocr-gateway.service
 ```
